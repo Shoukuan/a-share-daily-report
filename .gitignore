@@ -1,0 +1,22 @@
+# Cache directories
+cache/
+scripts/logs/
+
+# Generated reports
+reports/
+
+# Logs
+logs/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# Validation (auto-generated)
+validation/

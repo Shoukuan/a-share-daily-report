@@ -11,7 +11,7 @@ from dataclasses import asdict
 from datetime import datetime, date, timedelta
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
-from constants import INDEX_NAMES, YFINANCE_INDEX_MAP, ALL_INDICES, TIMEOUTS, RETRY_POLICY
+from constants import INDEX_NAMES, YFINANCE_INDEX_MAP, ALL_INDICES, TIMEOUTS, RETRY_POLICY, CACHE_TTL_CONFIG
 from international_event_rules import (
     classify_event_category,
     judge_impact_level,
@@ -31,6 +31,7 @@ from utils import (
     load_project_env,
     post_json_with_retry,
 )
+from schemas import SectorInfoSchema, validate_many
 
 logger = get_logger('data_fetcher')
 
@@ -42,7 +43,8 @@ class SectorFetcherMixin:
         """
         date_str = format_date(dt)
         cache_key = f'sectors_{date_str}'
-        cached = get_cache(cache_key, namespace='akshare', ttl=3600)
+        ttl = CACHE_TTL_CONFIG.get('sectors', 1800)
+        cached = get_cache(cache_key, namespace='akshare', ttl=ttl)
         if cached is not None:
             return {"success": True, "data": cached, "source": "cache", "cached": True}
 
@@ -101,7 +103,19 @@ class SectorFetcherMixin:
                 logger.warning(f"概念板块获取失败: {e}")
 
             if result["industry"] or result["concept"]:
-                set_cache(cache_key, result, namespace='akshare', ttl=3600)
+                # 数据验证（可选，失败仅记录warning）
+                try:
+                    validated_industry, ind_errors = validate_many(result["industry"], SectorInfoSchema)
+                    validated_concept, con_errors = validate_many(result["concept"], SectorInfoSchema)
+                    if ind_errors or con_errors:
+                        logger.warning(f"板块数据验证问题: industry={ind_errors}, concept={con_errors}")
+                    result["industry"] = validated_industry
+                    result["concept"] = validated_concept
+                except Exception as ve:
+                    logger.debug(f"板块数据验证跳过: {ve}")
+
+                ttl = CACHE_TTL_CONFIG.get('sectors', 1800)
+                set_cache(cache_key, result, namespace='akshare', ttl=ttl)
                 logger.info(f"✅ 板块数据成功：行业{len(result['industry'])} 概念{len(result['concept'])}")
                 return {"success": True, "data": result, "source": "akshare_ths", "cached": False}
 
@@ -114,7 +128,8 @@ class SectorFetcherMixin:
         """
         date_str = format_date(dt)
         cache_key = f'lhb_{date_str}'
-        cached = get_cache(cache_key, namespace='akshare', ttl=3600)
+        ttl = CACHE_TTL_CONFIG.get('lhb', 7200)
+        cached = get_cache(cache_key, namespace='akshare', ttl=ttl)
         if cached is not None:
             return {"success": True, "data": cached, "source": "cache", "cached": True}
 
@@ -135,7 +150,8 @@ class SectorFetcherMixin:
                         })
                     selected.sort(key=lambda x: x['net_inflow'], reverse=True)
                     result = selected[:10]
-                    set_cache(cache_key, result, namespace='akshare', ttl=3600)
+                    ttl = CACHE_TTL_CONFIG.get('lhb', 7200)
+                    set_cache(cache_key, result, namespace='akshare', ttl=ttl)
                     logger.info(f"✅ 龙虎榜成功: {len(result)} 条")
                     return {"success": True, "data": result, "source": "akshare", "cached": False}
             except Exception as e:
@@ -176,7 +192,8 @@ class SectorFetcherMixin:
             result = selected[:10]
 
             if cache_key:
-                set_cache(cache_key, result, namespace='akshare', ttl=3600)
+                ttl = CACHE_TTL_CONFIG.get('lhb', 7200)
+                set_cache(cache_key, result, namespace='akshare', ttl=ttl)
             logger.info(f"✅ tushare 龙虎榜: {len(result)} 条")
             return {"success": True, "data": result, "source": "tushare", "cached": False}
 

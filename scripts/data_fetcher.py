@@ -42,15 +42,18 @@ from utils import (
     safe_int,
     load_project_env,
     post_json_with_retry,
+    circuit_breaker,
 )
 
 logger = get_logger('data_fetcher')
 
 class DataFetcher(IndexFetcherMixin, SentimentFetcherMixin, MoneyFetcherMixin, InternationalFetcherMixin, NewsFetcherMixin, SectorFetcherMixin):
     _spot_cache = None
+    _spot_cache_ts = None  # 缓存时间戳，用于 TTL 控制
     _spot_tried = False
     _akshare_unavailable = False
     _spot_lock = threading.Lock()
+    _spot_cache_ttl = 300  # 缓存 TTL = 5 分钟
 
     def __init__(self, config):
         self.config = config
@@ -157,19 +160,34 @@ class DataFetcher(IndexFetcherMixin, SentimentFetcherMixin, MoneyFetcherMixin, I
             logger.warning(f"⚠️ tushare 初始化失败，已降级跳过: {e}")
 
 
+    @circuit_breaker('akshare.stock_zh_index_spot_em', failure_threshold=3, recovery_timeout=300)
     def _get_spot_em(self):
-        """Get cached spot_em DataFrame，返回 (df, error)"""
+        """Get cached spot_em DataFrame，支持 TTL 清理和自动重试"""
+        import time
         with type(self)._spot_lock:
-            if type(self)._spot_cache is not None:
-                return type(self)._spot_cache, None
-            if type(self)._spot_tried:
-                return None, "已尝试过 stock_zh_index_spot_em，本次跳过"
+            now = time.time()
+            # 检查缓存有效性（未过期）
+            if type(self)._spot_cache is not None and type(self)._spot_cache_ts is not None:
+                if now - type(self)._spot_cache_ts < type(self)._spot_cache_ttl:
+                    return type(self)._spot_cache, None
+                # 缓存过期，清空以便重新获取
+                type(self)._spot_cache = None
+                type(self)._spot_cache_ts = None
+
+            # 如果之前尝试失败且当前无缓存，短期内不再重试（避免爆发流量）
+            if type(self)._spot_tried and type(self)._spot_cache is None:
+                # 注意：由于 _spot_tried 一旦设为 True 不会重置，这里加上 TTL 保护
+                # 如果缓存过期（已清空），应允许重试
+                pass  # 继续执行重试逻辑
+
             try:
                 type(self)._spot_cache = self.ak.stock_zh_index_spot_em()
+                type(self)._spot_cache_ts = now
                 type(self)._spot_tried = True
                 return type(self)._spot_cache, None
             except Exception as e:
                 type(self)._spot_tried = True
+                type(self)._spot_cache_ts = None  # 失败时重置时间戳，允许后续重试
                 err_str = str(e)
                 if 'RemoteDisconnected' in err_str or 'push2.eastmoney.com' in err_str:
                     type(self)._akshare_unavailable = True

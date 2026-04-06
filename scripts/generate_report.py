@@ -34,7 +34,7 @@ from publisher import Publisher
 from data_collectors import MorningDataCollector, EveningDataCollector
 from config_validator import validate_config
 from errors import DataFetchError, AnalysisError, RenderError
-from pdf_converter import get_pdf_converter
+from report_saver import ReportSaver
 
 logger = get_logger('report_generator')
 
@@ -62,6 +62,7 @@ class ReportGenerator:
         self.analyzer = Analyzer(self.config)
         self.renderer = Renderer(self.config)
         self.publisher = Publisher(self.config)
+        self.saver = ReportSaver(self.config, self.publisher)
         self.morning_collector = MorningDataCollector(self.data_fetcher, self.analyzer, logger)
         self.evening_collector = EveningDataCollector(self.data_fetcher, self.analyzer, logger)
 
@@ -70,10 +71,36 @@ class ReportGenerator:
     def _load_config(self, config_path):
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
-                return yaml.safe_load(f)
+                config = yaml.safe_load(f)
+            # 展开输出目录中的环境变量
+            self._expand_config_env_vars(config)
+            return config
         except Exception as e:
             logger.warning(f"加载配置文件失败，使用默认配置: {e}")
             return {}
+
+    def _expand_config_env_vars(self, config):
+        """递归展开配置中的环境变量 ${VAR:-default}"""
+        if isinstance(config, dict):
+            for key, value in config.items():
+                if isinstance(value, str):
+                    # 支持 ${VAR:-default} 语法
+                    import re
+                    pattern = r'\$\{([^}]+)\}'
+                    matches = re.findall(pattern, value)
+                    for match in matches:
+                        if ':-' in match:
+                            var_name, default = match.split(':-', 1)
+                            expanded = os.getenv(var_name, default)
+                        else:
+                            expanded = os.getenv(match, '')
+                        value = value.replace(f'${{{match}}}', expanded)
+                    config[key] = value
+                else:
+                    self._expand_config_env_vars(value)
+        elif isinstance(config, list):
+            for item in config:
+                self._expand_config_env_vars(item)
 
     @monitor_stage("report.generate.morning.total")
     def generate_morning_report(self, dt=None, publish=False):
@@ -117,11 +144,7 @@ class ReportGenerator:
                         raise RenderError(str(e)) from e
                 logger.info("步骤4: 保存报告...")
                 with stage_timer("report.morning.save"):
-                    save_result = self._save_report(markdown, 'morning', effective_dt)
-                if isinstance(save_result, tuple):
-                    output_path, pdf_path = save_result
-                else:
-                    output_path, pdf_path = save_result, None
+                    output_path, pdf_path = self.saver.save_report_with_pdf(markdown, 'morning', effective_dt)
                 return markdown, output_path, pdf_path
 
             markdown, output_path, pdf_path = run_with_timeout(_do_generate, total_timeout)
@@ -206,11 +229,7 @@ class ReportGenerator:
                         raise RenderError(str(e)) from e
                 logger.info("步骤4: 保存报告...")
                 with stage_timer("report.evening.save"):
-                    save_result = self._save_report(markdown, 'evening', effective_dt)
-                if isinstance(save_result, tuple):
-                    output_path, pdf_path = save_result
-                else:
-                    output_path, pdf_path = save_result, None
+                    output_path, pdf_path = self.saver.save_report_with_pdf(markdown, 'evening', effective_dt)
                 return markdown, output_path, pdf_path
 
             markdown, output_path, pdf_path = run_with_timeout(_do_generate, total_timeout)
@@ -274,6 +293,19 @@ class ReportGenerator:
         # 新闻分类
         news_list = data.get('news', {}).get('data', [])
         result['news'] = self.analyzer.classify_news(news_list)
+
+        # 计算自选股整体统计（用于早报摘要或后续分析）
+        watchlist_performance = data.get('watchlist_performance', [])
+        if watchlist_performance:
+            up_count = sum(1 for p in watchlist_performance if p.get('change_pct', 0) > 0)
+            down_count = sum(1 for p in watchlist_performance if p.get('change_pct', 0) < 0)
+            avg_return = sum(p.get('change_pct', 0) for p in watchlist_performance) / len(watchlist_performance)
+            result['watchlist_stats'] = {
+                'up_count': up_count,
+                'down_count': down_count,
+                'avg_return': round(avg_return, 2)
+            }
+
         return result
 
     def _analyze_evening_data(self, data):
@@ -350,191 +382,6 @@ class ReportGenerator:
                 overview['northbound'] = northbound
             logger.info(f"✅ 已打通北向资金: {northbound/1e8:.2f} 亿")
 
-    def _save_report(self, markdown, mode, dt):
-        output_config = self.config.get('output', {})
-        base_dir = os.getenv('A_SHARE_OUTPUT_DIR', output_config.get('base_dir', 'reports'))
-        base_dir = os.path.expanduser(base_dir)
-        sub_dir = output_config.get(f'{mode}_subdir', mode)
-
-        # 处理绝对路径和相对路径
-        if os.path.isabs(base_dir):
-            # 如果是绝对路径，直接使用
-            base_path = base_dir
-        else:
-            # 如果是相对路径，使用项目根目录
-            project_root = get_project_root()
-            base_path = os.path.join(project_root, base_dir)
-        
-        output_dir = os.path.join(base_path, sub_dir)
-        os.makedirs(output_dir, exist_ok=True)
-
-        date_str = format_date(dt, '%Y%m%d')
-        mode_name = '早报' if mode == 'morning' else '晚报'
-        filename = f'A股{mode_name}-{date_str}.md'
-        output_path = os.path.join(output_dir, filename)
-
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(markdown)
-
-        logger.info(f"报告已保存: {output_path}")
-
-        # PDF 导出（可选，根据 config.publish.pdf.enabled 决定）
-        pdf_config = self.config.get('publish', {}).get('pdf', {})
-        if pdf_config.get('enabled', False):
-            pdf_result = self._export_pdf(markdown, output_path, mode, dt, pdf_config)
-            if pdf_result:
-                return output_path, pdf_result
-
-        return output_path
-
-    def _export_pdf(self, markdown, md_path, mode, dt, pdf_config):
-        """将 Markdown 报告导出为 PDF"""
-        engine = pdf_config.get('engine', 'fpdf2')
-        pdf_output_dir = os.getenv('A_SHARE_PDF_OUTPUT_DIR', pdf_config.get('output_dir', 'reports/pdf'))
-        pdf_output_dir = os.path.expanduser(pdf_output_dir)
-
-        # 构建 PDF 输出路径
-        if not os.path.isabs(pdf_output_dir):
-            project_root = get_project_root()
-            pdf_output_dir = os.path.join(project_root, pdf_output_dir)
-        os.makedirs(pdf_output_dir, exist_ok=True)
-
-        date_str = format_date(dt, '%Y%m%d')
-        mode_name = '早报' if mode == 'morning' else '晚报'
-        pdf_filename = f'A股{mode_name}-{date_str}.pdf'
-        pdf_path = os.path.join(pdf_output_dir, pdf_filename)
-
-        title = f"A股{mode_name}-{date_str}"
-
-        converter = get_pdf_converter(engine=engine, publisher=self.publisher)
-        result = converter.convert(markdown, pdf_path, title)
-
-        if result:
-            logger.info(f"PDF 已导出: {result}")
-            return result
-        else:
-            logger.warning("PDF 导出失败，继续执行")
-            return None
-
-    def _pdf_via_fpdf2(self, markdown_content, pdf_path, title):
-        """使用 fpdf2 转换 PDF（纯 Python，无系统依赖）"""
-        try:
-            from fpdf import FPDF
-        except ImportError:
-            logger.warning("fpdf2 未安装，跳过 PDF 导出")
-            return None
-
-        try:
-            pdf = FPDF(format='A4')
-            pdf.set_margins(10, 10, 10)
-            pdf.set_auto_page_break(auto=True, margin=10)
-
-            # 查找中文字体
-            font_path = self._find_cjk_font()
-            if font_path:
-                pdf.add_font('CJK', '', font_path)
-                font_name = 'CJK'
-            else:
-                font_name = 'Helvetica'
-                logger.warning("未找到中文字体，PDF 中中文可能显示异常")
-
-            pdf.add_page()
-            pdf.set_font(font_name, size=8)
-
-            # 逐行写入（跳过表格，只渲染文本）
-            in_table = False
-            for line_num, line in enumerate(markdown_content.split('\n'), start=1):
-                stripped = line.strip()
-                if not stripped:
-                    pdf.ln(3)
-                    in_table = False
-                    continue
-
-                # 检测表格开始
-                if stripped.startswith('|') and '---' in stripped:
-                    in_table = True
-                    continue
-                if in_table and stripped.startswith('|'):
-                    continue  # 跳过表格行
-                if in_table and not stripped.startswith('|'):
-                    in_table = False
-
-                try:
-                    # 标题
-                    if stripped.startswith('# '):
-                        pdf.set_font(font_name, size=13)
-                        pdf.multi_cell(0, 7, stripped[2:].strip())
-                        pdf.set_font(font_name, size=8)
-                        pdf.ln(2)
-                        continue
-                    if stripped.startswith('## '):
-                        pdf.set_font(font_name, size=11)
-                        pdf.multi_cell(0, 6, stripped[3:].strip())
-                        pdf.set_font(font_name, size=8)
-                        pdf.ln(1)
-                        continue
-                    if stripped.startswith('### '):
-                        pdf.set_font(font_name, size=9)
-                        pdf.multi_cell(0, 5, stripped[4:].strip())
-                        pdf.set_font(font_name, size=8)
-                        continue
-
-                    # 分隔线
-                    if stripped.startswith('---'):
-                        pdf.ln(2)
-                        continue
-
-                    # 普通文本（去掉 Markdown 标记）
-                    clean = stripped.replace('**', '').replace('__', '').replace('*', '').replace('_', '')
-                    if clean:
-                        pdf.multi_cell(0, 4, clean)
-                except Exception as e:
-                    logger.warning(f"第 {line_num} 行渲染失败: {e}, 内容: {stripped[:80]}")
-                    continue
-
-            pdf.output(pdf_path)
-            return pdf_path
-        except Exception as e:
-            logger.error(f"fpdf2 转换失败: {e}")
-            return None
-
-    def _pdf_via_weasyprint(self, markdown_content, pdf_path, title):
-        """使用 weasyprint 转换 PDF"""
-        try:
-            from weasyprint import HTML
-        except ImportError:
-            logger.warning("weasyprint 未安装，跳过 PDF 导出")
-            return None
-
-        try:
-            html_content = self.publisher._markdown_to_html(markdown_content, title)
-            HTML(string=html_content).write_pdf(pdf_path)
-            return pdf_path
-        except Exception as e:
-            logger.error(f"weasyprint 转换失败: {e}")
-            return None
-
-    def _find_cjk_font(self):
-        """查找系统中可用的中文字体"""
-        candidates = [
-            '/System/Library/Fonts/PingFang.ttc',
-            '/System/Library/Fonts/STHeiti Light.ttc',
-            '/System/Library/Fonts/STHeiti Medium.ttc',
-            '/Library/Fonts/Arial Unicode.ttf',
-            '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
-            '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
-        ]
-        for path in candidates:
-            if os.path.exists(path):
-                return path
-        return None
-
-    def _pdf_via_wkhtmltopdf(self, markdown_content, pdf_path, title):
-        """使用 wkhtmltopdf 转换 PDF"""
-        result = self.publisher.convert_to_pdf(markdown_content, pdf_path, title)
-        if result.get('success'):
-            return result.get('pdf_path')
-        return None
 
 
 def main():

@@ -11,7 +11,7 @@ from dataclasses import asdict
 from datetime import datetime, date, timedelta
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
-from constants import INDEX_NAMES, YFINANCE_INDEX_MAP, ALL_INDICES, TIMEOUTS, RETRY_POLICY
+from constants import INDEX_NAMES, YFINANCE_INDEX_MAP, ALL_INDICES, TIMEOUTS, RETRY_POLICY, CACHE_TTL_CONFIG
 from international_event_rules import (
     classify_event_category,
     judge_impact_level,
@@ -31,6 +31,7 @@ from utils import (
     load_project_env,
     post_json_with_retry,
 )
+from schemas import MoneyFlowSchema, validate_schema
 
 logger = get_logger('data_fetcher')
 
@@ -43,7 +44,8 @@ class MoneyFetcherMixin:
         """
         date_str = format_date(dt)
         cache_key = f'moneyflow_{date_str}'
-        cached = get_cache(cache_key, namespace='akshare', ttl=3600)
+        ttl = CACHE_TTL_CONFIG.get('money_flow', 300)
+        cached = get_cache(cache_key, namespace='akshare', ttl=ttl)
         if cached is not None:
             return {"success": True, "data": cached, "source": "cache", "cached": True}
 
@@ -128,7 +130,14 @@ class MoneyFetcherMixin:
             except Exception as e:
                 logger.debug(f"tushare 北向资金获取失败: {e}")
 
-        set_cache(cache_key, result, namespace='akshare', ttl=3600)
+        ttl = CACHE_TTL_CONFIG.get('money_flow', 300)
+        # 数据验证（非阻塞，失败仅记录）
+        validated_data, errors = validate_schema(result, MoneyFlowSchema)
+        if errors:
+            logger.warning(f"资金流向数据验证失败: {errors}; 使用原始数据")
+        else:
+            result = validated_data
+        set_cache(cache_key, result, namespace='akshare', ttl=ttl)
         return {"success": True, "data": result, "source": "akshare", "cached": False}
 
     def get_industry_fund_flow(self, dt=None):
@@ -178,7 +187,8 @@ class MoneyFetcherMixin:
                         "top_net_outflow": outflow_top5
                     }
 
-                    set_cache(cache_key, data, namespace='akshare', ttl=3600)
+                    ttl = CACHE_TTL_CONFIG.get('industry_fund_flow', 1800)
+                    set_cache(cache_key, data, namespace='akshare', ttl=ttl)
                     logger.info(f"✅ 行业资金流成功: {len(df)} 个行业")
                     return {"success": True, "data": data, "source": "akshare", "cached": False}
             except Exception as e:
@@ -192,7 +202,8 @@ class MoneyFetcherMixin:
         # ── 第二层：mx-data 行业资金流兜底 ──
         result_mx = self._get_industry_fund_flow_mx_data()
         if result_mx.get('success'):
-            set_cache(cache_key, result_mx['data'], namespace='akshare', ttl=3600)
+            ttl = CACHE_TTL_CONFIG.get('industry_fund_flow', 1800)
+            set_cache(cache_key, result_mx['data'], namespace='akshare', ttl=ttl)
             logger.info(f"✅ 行业资金流成功(mx-data): {result_mx['data']['total_industries']} 个行业")
             return result_mx
 
@@ -262,7 +273,8 @@ class MoneyFetcherMixin:
                     logger.debug(f"获取 {config['name']} 失败: {e}")
 
             if result:
-                set_cache(cache_key, result, namespace='yfinance', ttl=1800)
+                ttl = CACHE_TTL_CONFIG.get('global_assets', 3600)
+                set_cache(cache_key, result, namespace='yfinance', ttl=ttl)
                 logger.info(f"✅ 获取全球资产成功: {len(result)}/3")
                 return {"success": True, "data": result, "source": "yfinance", "cached": False}
             else:

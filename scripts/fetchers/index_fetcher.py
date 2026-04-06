@@ -11,7 +11,7 @@ from dataclasses import asdict
 from datetime import datetime, date, timedelta
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
-from constants import INDEX_NAMES, YFINANCE_INDEX_MAP, ALL_INDICES, TIMEOUTS, RETRY_POLICY
+from constants import INDEX_NAMES, YFINANCE_INDEX_MAP, ALL_INDICES, TIMEOUTS, RETRY_POLICY, CACHE_TTL_CONFIG
 from international_event_rules import (
     classify_event_category,
     judge_impact_level,
@@ -31,6 +31,7 @@ from utils import (
     load_project_env,
     post_json_with_retry,
 )
+from schemas import IndexDataSchema, validate_schema
 
 logger = get_logger('data_fetcher')
 
@@ -42,8 +43,9 @@ class IndexFetcherMixin:
         """
         date_str = format_date(dt)
         cache_key = f'index_{index_code}_{date_str}'
+        ttl = CACHE_TTL_CONFIG.get('index_data', 60)
 
-        cached = get_cache(cache_key, namespace='akshare', ttl=3600)
+        cached = get_cache(cache_key, namespace='akshare', ttl=ttl)
         if cached is not None:
             return {"success": True, "data": cached, "source": "cache", "cached": True}
 
@@ -77,7 +79,14 @@ class IndexFetcherMixin:
                             amount=int(amount_val),
                             source="akshare_spot",
                         )
-                        set_cache(cache_key, data, namespace='akshare', ttl=3600)
+                        ttl = CACHE_TTL_CONFIG.get('index_data', 60)
+                        # 数据验证（非阻塞，失败仅记录）
+                        validated_data, errors = validate_schema(data, IndexDataSchema)
+                        if errors:
+                            logger.warning(f"指数数据验证失败: {errors}; 使用原始数据")
+                        else:
+                            data = validated_data
+                        set_cache(cache_key, data, namespace='akshare', ttl=ttl)
                         logger.info(f"✅ akshare(spot) 获取指数成功: {index_code} close={data['close']} change={change_pct}% amount={amount_val/1e8:.0f}亿")
                         return {"success": True, "data": data, "source": "akshare_spot", "cached": False}
                     else:
@@ -167,6 +176,12 @@ class IndexFetcherMixin:
                     source="baostock",
                 )
 
+                # 数据验证（非阻塞，失败仅记录）
+                validated_data, errors = validate_schema(data, IndexDataSchema)
+                if errors:
+                    logger.warning(f"baostock 指数数据验证失败: {errors}; 使用原始数据")
+                else:
+                    data = validated_data
                 set_cache(cache_key, data, namespace='baostock', ttl=3600)
                 logger.info(f"✅ baostock 获取指数成功: {index_code} close={data['close']} change={pct_chg}% amount={float(row['amount'])/1e8:.0f}亿")
                 return {"success": True, "data": data, "source": "baostock", "cached": False}
@@ -229,7 +244,14 @@ class IndexFetcherMixin:
                         amount=0,
                         source="yfinance",
                     )
-                    set_cache(cache_key, data, namespace='yfinance', ttl=3600)
+                    ttl = CACHE_TTL_CONFIG.get('index_data', 60)
+                    # 数据验证（非阻塞，失败仅记录）
+                    validated_data, errors = validate_schema(data, IndexDataSchema)
+                    if errors:
+                        logger.warning(f"yfinance 指数数据验证失败: {errors}; 使用原始数据")
+                    else:
+                        data = validated_data
+                    set_cache(cache_key, data, namespace='yfinance', ttl=ttl)
                     logger.info(f"✅ yfinance 获取指数: {index_code} change={change_pct}%")
                     return {"success": True, "data": data, "source": "yfinance", "cached": False}
         except Exception as e:
@@ -254,7 +276,8 @@ class IndexFetcherMixin:
         """
         date_str = format_date(dt)
         cache_key = f'major_indices_{date_str}'
-        cached = get_cache(cache_key, namespace='indices', ttl=3600)
+        ttl = CACHE_TTL_CONFIG.get('index_data', 60)
+        cached = get_cache(cache_key, namespace='indices', ttl=ttl)
         if cached is not None:
             return {"success": True, "data": cached, "source": "cache", "cached": True}
 
@@ -284,7 +307,8 @@ class IndexFetcherMixin:
                     continue
 
         if result:
-            set_cache(cache_key, result, namespace='indices', ttl=3600)
+            ttl = CACHE_TTL_CONFIG.get('index_data', 60)
+            set_cache(cache_key, result, namespace='indices', ttl=ttl)
             logger.info(f"✅ 获取主要指数成功: {len(result)}/10")
             if errors:
                 logger.warning(f"部分指数获取失败: {', '.join(errors)}")

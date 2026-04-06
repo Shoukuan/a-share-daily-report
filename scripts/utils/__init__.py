@@ -17,6 +17,7 @@ from .helpers import (
     safe_float,
     safe_int
 )
+from .circuit_breaker import circuit_breaker, CircuitBreaker, CircuitBreakerManager
 
 __all__ = [
     'get_cache',
@@ -40,5 +41,8 @@ __all__ = [
     'format_number',
     'format_percent',
     'safe_float',
-    'safe_int'
+    'safe_int',
+    'circuit_breaker',
+    'CircuitBreaker',
+    'CircuitBreakerManager',
 ]

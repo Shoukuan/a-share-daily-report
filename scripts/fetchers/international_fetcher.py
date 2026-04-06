@@ -11,7 +11,7 @@ from dataclasses import asdict
 from datetime import datetime, date, timedelta
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
-from constants import INDEX_NAMES, YFINANCE_INDEX_MAP, ALL_INDICES, TIMEOUTS, RETRY_POLICY
+from constants import INDEX_NAMES, YFINANCE_INDEX_MAP, ALL_INDICES, TIMEOUTS, RETRY_POLICY, CACHE_TTL_CONFIG
 from international_event_rules import (
     classify_event_category,
     judge_impact_level,
@@ -42,7 +42,8 @@ class InternationalFetcherMixin:
         失败返回错误，无降级数据
         """
         cache_key = 'us_market'
-        cached = get_cache(cache_key, namespace='yfinance', ttl=1800)
+        ttl = CACHE_TTL_CONFIG.get('us_market', 3600)
+        cached = get_cache(cache_key, namespace='yfinance', ttl=ttl)
         if cached is not None:
             return {"success": True, "data": cached, "source": "cache", "cached": True}
 
@@ -115,7 +116,8 @@ class InternationalFetcherMixin:
                 "chinadotcom": cdc_data
             }
 
-            set_cache(cache_key, result, namespace='yfinance', ttl=1800)
+            ttl = CACHE_TTL_CONFIG.get('us_market', 3600)
+            set_cache(cache_key, result, namespace='yfinance', ttl=ttl)
             logger.info(f"✅ yfinance 获取美股数据成功")
             return {"success": True, "data": result, "source": "yfinance", "cached": False}
 
@@ -141,7 +143,8 @@ class InternationalFetcherMixin:
         }
         """
         cache_key = 'futures_data'
-        cached = get_cache(cache_key, namespace='mx_data', ttl=600)  # 10分钟缓存，期指变化频繁
+        ttl = CACHE_TTL_CONFIG.get('futures', 300)
+        cached = get_cache(cache_key, namespace='mx_data', ttl=ttl)
         if cached is not None:
             return {"success": True, "data": cached, "source": "cache", "cached": True}
 
@@ -255,7 +258,8 @@ class InternationalFetcherMixin:
 
         # 检查：至少有一个期指数据
         if futures_data['futures']:
-            set_cache(cache_key, futures_data, namespace='mx_data', ttl=600)
+            ttl = CACHE_TTL_CONFIG.get('futures', 300)
+            set_cache(cache_key, futures_data, namespace='mx_data', ttl=ttl)
             source_str = ' + '.join(sources) if sources else 'unknown'
             logger.info(f"✅ 期指数据获取成功（来源: {source_str}）")
             return {"success": True, "data": futures_data, "source": source_str, "cached": False}

@@ -17,7 +17,9 @@ CACHE_ROOT = os.path.join(
 
 
 def _get_cache_path(key, namespace='default'):
-    key_hash = hashlib.md5(key.encode('utf-8')).hexdigest()
+    # 避免跨命名空间 key 冲突（如不同数据源使用相同 key）
+    full_key = f"{namespace}:{key}"
+    key_hash = hashlib.md5(full_key.encode('utf-8')).hexdigest()
     namespace_dir = os.path.join(CACHE_ROOT, namespace)
     os.makedirs(namespace_dir, exist_ok=True)
     return os.path.join(namespace_dir, f'{key_hash}.json')

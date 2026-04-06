@@ -734,7 +734,7 @@ class Analyzer:
                         "theme": theme_name,
                         "avg_change_pct": round(avg_change, 2),
                         "sector_count": len(matched_sectors),
-                        "top_sectors": [s.get('sector') for s in top3],
+                        "top_sectors": [s.get('sector', '') for s in top3],
                         "top_leaders": [s.get('leaders', [{}])[0].get('name', '') if s.get('leaders') else '' for s in top3]
                     })
 

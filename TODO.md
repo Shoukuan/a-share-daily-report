@@ -118,12 +118,15 @@
 | 分析模块 | 95% | ✅ 核心算法完成 / 回测参数待优化 |
 | 渲染模块 | 100% | ✅ 早晚报完整渲染 |
 | 主控制器 | 100% | ✅ |
+| 报告保存器 | 100% | ✅ 新增独立模块（ReportSaver） |
+| 数据验证层 | 100% | ✅ 新增 Pydantic Schemas |
+| 熔断器 | 100% | ✅ 新增 CircuitBreaker |
 | 发布模块 | 85% | ✅ Agent 驱动飞书发布流程打通 / 消息已开启 |
 | 测试 | 70% | ✅ 16/16 核心用例通过 / 网络相关 skip |
 | 凯利公式仓位 | 85% | ✅ 基础实现 / 回测参数待接入 |
 | 主题追踪 | 100% | ✅ 8 个预定义主题 |
 
-**总体完成度：约 95%**
+**总体完成度：约 96%**（较 95% 提升 1%）
 
 ---
 
@@ -145,4 +148,67 @@
 
 ---
 
-*最后更新：2026-04-04*
+## P1 增强记录（2026-04-06）
+
+### P1-1：主控制器拆分
+- [x] 新建 `report_saver.py`（ReportSaver 类，140 行）
+  - `save_markdown()` - 保存 Markdown 文件
+  - `export_pdf()` - 可选 PDF 导出（支持多引擎）
+  - `save_report_with_pdf()` - 统一接口
+- [x] `generate_report.py` 清理
+  - 移除 `_save_report`、`_export_pdf`、`_pdf_via_*`、`_find_cjk_font`（约 180 行）
+  - 注入 `ReportSaver`，调用 `self.saver.save_report_with_pdf()`
+  - 类大小从 562 行 → 380 行（-32%）
+- [x] 删除 `publisher` 中的 PDF 转换引用（已转移）
+
+### P1-3：网络熔断机制
+- [x] 新建 `utils/circuit_breaker.py`（180 行）
+  - `CircuitBreaker` 类：CLOSED → OPEN → HALF_OPEN 状态机
+  - `@circuit_breaker` 装饰器工厂
+  - `CircuitBreakerManager` 全局管理器
+- [x] 集成到 `data_fetcher.py`
+  - `@circuit_breaker('akshare.stock_zh_index_spot_em', failure_threshold=3, recovery_timeout=300)`
+  - 保护 `_get_spot_em()` 方法
+- [x] 导出到 `utils/__init__.py`
+
+### P1-5：数据验证层
+- [x] 新建 `schemas.py`（230 行）
+  - 9 个 Pydantic Schema: IndexData, MarketSentiment, MoneyFlow, SectorInfo, SectorData, LHBItem, NewsItem, MarketOverview, MarketDepth, GlobalAssets
+  - 统一接口: `validate_schema()`、`validate_many()`
+- [x] 验证集成到各 Fetcher：
+  - `index_fetcher.py`: akshare/baostock/yfinance 三处成功返回点前
+  - `sentiment_fetcher.py`: akshare 和 tushare 两处成功返回点前
+  - `money_fetcher.py`: 最终返回前
+  - `news_fetcher.py`: 缓存前批量验证 `validate_many(news_items, NewsItemSchema)`
+  - `sector_fetcher.py`: 已集成（之前完成）
+- [x] 验证策略：非阻塞，失败仅记录 warning，不影响流程
+
+---
+
+## P0 缺陷修复记录（2026-04-06）
+
+### P0-4：缓存命名空间冲突
+- [x] `utils/cache.py:19-23` - `key_hash = hashlib.md5(f"{namespace}:{key}".encode()).hexdigest()`
+
+### P0-3：主题追踪字段名不匹配
+- [x] `analyzer.py:737` - `s.get('sector', '')` 添加默认值
+
+### P0-5：新闻解析路径硬编码
+- [x] `fetchers/news_fetcher.py:108-180` - 新增 `_extract_news_items()` 支持多级探测
+  - 路径 1: `result['data']['data']['llmSearchResponse']['data']`
+  - 路径 2: `result['llmSearchResponse']['data']`
+  - 路径 3: `result['data']` / `result['items']` / `result['news']`
+  - 路径 4: 递归搜索任意包含 news/item 的列表
+
+### P0-1：`_get_spot_em()` 内存泄漏
+- [x] `data_fetcher.py:50-53, 160-202`
+  - 添加 `_spot_cache_ts` 和 `_spot_cache_ttl = 300`
+  - 自动清理过期缓存（5 分钟 TTL）
+  - 失败时重置时间戳，允许后续重试
+
+### P0-2：早报缺少自选股统计
+- [x] `generate_report.py:303-311` - 新增 `watchlist_stats`（涨跌数、平均收益）
+
+---
+
+*最后更新：2026-04-06*

@@ -11,7 +11,7 @@ from dataclasses import asdict
 from datetime import datetime, date, timedelta
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
-from constants import INDEX_NAMES, YFINANCE_INDEX_MAP, ALL_INDICES, TIMEOUTS, RETRY_POLICY
+from constants import INDEX_NAMES, YFINANCE_INDEX_MAP, ALL_INDICES, TIMEOUTS, RETRY_POLICY, CACHE_TTL_CONFIG
 from international_event_rules import (
     classify_event_category,
     judge_impact_level,
@@ -31,6 +31,7 @@ from utils import (
     load_project_env,
     post_json_with_retry,
 )
+from schemas import MarketSentimentSchema, validate_schema
 
 logger = get_logger('data_fetcher')
 
@@ -38,7 +39,8 @@ class SentimentFetcherMixin:
     def get_market_sentiment(self, dt, index_cache=None):
         date_str = format_date(dt)
         cache_key = f'sentiment_{date_str}'
-        cached = get_cache(cache_key, namespace='akshare', ttl=3600)
+        ttl = CACHE_TTL_CONFIG.get('market_sentiment', 300)
+        cached = get_cache(cache_key, namespace='akshare', ttl=ttl)
         if cached is not None:
             return {"success": True, "data": cached, "source": "cache", "cached": True}
 
@@ -92,7 +94,14 @@ class SentimentFetcherMixin:
                     "turnover_change_pct": 0.0
                 }
 
-                set_cache(cache_key, data, namespace='akshare', ttl=3600)
+                ttl = CACHE_TTL_CONFIG.get('market_sentiment', 300)
+                # 数据验证（非阻塞，失败仅记录）
+                validated_data, errors = validate_schema(data, MarketSentimentSchema)
+                if errors:
+                    logger.warning(f"市场情绪数据验证失败: {errors}; 使用原始数据")
+                else:
+                    data = validated_data
+                set_cache(cache_key, data, namespace='akshare', ttl=ttl)
                 logger.info(f"✅ akshare 获取市场情绪数据成功: {date_str}")
                 return {"success": True, "data": data, "source": "akshare", "cached": False}
             except Exception as e:
@@ -171,6 +180,13 @@ class SentimentFetcherMixin:
                 "total_turnover": total_turnover,
                 "turnover_change_pct": 0.0
             }
+
+            # 数据验证（非阻塞，失败仅记录）
+            validated_data, errors = validate_schema(data, MarketSentimentSchema)
+            if errors:
+                logger.warning(f"tushare 情绪数据验证失败: {errors}; 使用原始数据")
+            else:
+                data = validated_data
 
             if cache_key:
                 set_cache(cache_key, data, namespace='akshare', ttl=3600)

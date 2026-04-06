@@ -106,3 +106,19 @@ RETRY_POLICY = {
     "http_retries": 1,
     "http_backoff_seconds": 0.2,
 }
+
+# 缓存 TTL 配置（秒）
+# 不同数据源的更新频率不同，需差异化配置
+CACHE_TTL_CONFIG = {
+    'index_data': 60,          # 指数数据：交易时秒级变化，1分钟
+    'market_sentiment': 300,   # 市场情绪：盘中5分钟
+    'money_flow': 300,         # 资金流向：盘中5分钟（实际可能更慢）
+    'industry_fund_flow': 1800,  # 行业资金流向：30分钟（更新较慢）
+    'news': 900,               # 新闻数据：15分钟
+    'lhb': 7200,               # 龙虎榜：2小时（盘后更新，次日不变）
+    'sectors': 1800,           # 板块数据：30分钟
+    'us_market': 3600,         # 美股：1小时（海外市场）
+    'futures': 300,            # 期指：5分钟（夜盘变化）
+    'global_assets': 3600,     # 全球资产：1小时
+    'watchlist': 60,           # 自选股行情：1分钟（实时性要求高）
+}

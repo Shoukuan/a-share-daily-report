@@ -4,7 +4,7 @@ version: "1.0"
 
 # 输出配置
 output:
-  base_dir: "/Users/yibiao/Desktop/openclaw_doc/财经日报"
+  base_dir: "${A_SHARE_OUTPUT_DIR:-reports}"
   morning_subdir: "morning"
   evening_subdir: "evening"
 

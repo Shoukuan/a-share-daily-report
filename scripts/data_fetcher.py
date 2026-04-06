@@ -5,19 +5,43 @@
 """
 
 import os
+import threading
 import urllib.request
+import requests
 import pandas as pd
+from dataclasses import asdict
 from datetime import datetime, date, timedelta
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
-from utils import get_cache, set_cache, get_logger, format_date, parse_date, safe_int
+from constants import INDEX_NAMES, YFINANCE_INDEX_MAP, ALL_INDICES, TIMEOUTS, RETRY_POLICY
+from international_event_rules import (
+    classify_event_category,
+    judge_impact_level,
+    generate_a_share_impact,
+    get_affected_sectors as infer_affected_sectors,
+    get_a_share_impact_sectors as infer_a_share_impact_sectors,
+)
+from models import IndexData, NewsItem, FuturesItem
+from utils import (
+    get_cache,
+    set_cache,
+    get_logger,
+    log_event,
+    format_date,
+    parse_date,
+    safe_int,
+    load_project_env,
+    post_json_with_retry,
+    urlopen_json_with_retry,
+)
 
 logger = get_logger('data_fetcher')
 
 class DataFetcher:
-    _spot_cache = None  # Class-level cache for stock_zh_index_spot_em
-    _spot_tried = False  # 标记是否已经尝试过 spot（即使失败也跳过重试）
-    _akshare_unavailable = False  # 全局标记：akshare push2.eastmoney.com 不可用
+    _spot_cache = None
+    _spot_tried = False
+    _akshare_unavailable = False
+    _spot_lock = threading.Lock()
 
     def __init__(self, config):
         self.config = config
@@ -25,33 +49,58 @@ class DataFetcher:
         self._load_env()
         self._init_akshare()
         self._init_tushare()
-        logger.info("DataFetcher 初始化完成")
-        # 调试：显示关键 API KEY 状态（只显示前缀）
-        mx_key = os.getenv('MX_APIKEY', 'NOT SET')
-        if mx_key != 'NOT SET':
-            logger.info(f"✅ MX_APIKEY 已加载: {mx_key[:10]}...")
-        else:
+        mx_ready = bool(os.getenv('MX_APIKEY'))
+        ts_ready = bool(os.getenv('TUSHARE_TOKEN'))
+        log_event(
+            logger,
+            "info",
+            "data_fetcher_init",
+            mx_apikey_set=mx_ready,
+            tushare_token_set=ts_ready,
+        )
+        if not mx_ready:
             logger.warning("⚠️ MX_APIKEY 未设置，期指数据可能无法获取")
-        ts_key = os.getenv('TUSHARE_TOKEN', 'NOT SET')
-        if ts_key != 'NOT SET':
-            logger.info(f"✅ TUSHARE_TOKEN 已加载: {ts_key[:10]}...")
-        else:
+        if not ts_ready:
             logger.warning("⚠️ TUSHARE_TOKEN 未设置，资金流向数据可能无法获取")
 
     def _load_env(self):
         """加载 .env 文件到环境变量"""
-        try:
-            from dotenv import load_dotenv
-            # 向上 3 级：scripts/ → a-share-daily-report/ → skills/ → workspace-trader/
-            dotenv_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', '.env')
-            dotenv_path = os.path.normpath(dotenv_path)
-            if os.path.exists(dotenv_path):
-                load_dotenv(dotenv_path, override=True)  # 覆盖已存在的环境变量
-                logger.debug(f"✅ 已加载 .env 文件: {dotenv_path}")
-            else:
-                logger.warning(f"⚠️ .env 文件不存在: {dotenv_path}")
-        except ImportError:
-            logger.warning("python-dotenv 未安装，无法加载 .env 文件")
+        env_path = load_project_env(override=False)
+        if env_path:
+            logger.debug(f"✅ 已加载 .env 文件: {env_path}")
+
+    def _build_index_data(
+        self,
+        index_code,
+        date_str,
+        close,
+        open_price,
+        high,
+        low,
+        pre_close,
+        change,
+        change_pct,
+        vol=0,
+        amount=0,
+        source="",
+    ):
+        """统一构建指数数据结构（dataclass -> dict）。"""
+        item = IndexData(
+            ts_code=index_code,
+            name=self._get_index_name(index_code),
+            trade_date=date_str,
+            close=float(close),
+            open=float(open_price),
+            high=float(high),
+            low=float(low),
+            pre_close=float(pre_close),
+            change=float(change),
+            change_pct=float(change_pct),
+            vol=int(vol or 0),
+            amount=int(amount or 0),
+            source=source,
+        )
+        return asdict(item)
 
     def _init_akshare(self):
         try:
@@ -86,28 +135,30 @@ class DataFetcher:
             self.ts = None
             self.pro = None
             logger.warning("⚠️ tushare 未安装，资金流向数据不可用")
+        except Exception as e:
+            self.ts = None
+            self.pro = None
+            logger.warning(f"⚠️ tushare 初始化失败，已降级跳过: {e}")
 
 
     def _get_spot_em(self):
-        """Get cached spot_em DataFrame，返回 (df, error)
-        修复：即使失败也标记 _spot_tried，避免每次指数查询都重试远程接口。
-        """
-        if DataFetcher._spot_cache is not None:
-            return DataFetcher._spot_cache, None
-        if DataFetcher._spot_tried:
-            return None, "已尝试过 stock_zh_index_spot_em，本次跳过"
-        try:
-            DataFetcher._spot_cache = self.ak.stock_zh_index_spot_em()
-            DataFetcher._spot_tried = True
-            return DataFetcher._spot_cache, None
-        except Exception as e:
-            DataFetcher._spot_tried = True
-            # 连续 RemoteDisconnected 标记 akshare 不可用
-            err_str = str(e)
-            if 'RemoteDisconnected' in err_str or 'push2.eastmoney.com' in err_str:
-                DataFetcher._akshare_unavailable = True
-                logger.warning(f"akshare 东方财富接口不可用: {e}")
-            return None, str(e)
+        """Get cached spot_em DataFrame，返回 (df, error)"""
+        with DataFetcher._spot_lock:
+            if DataFetcher._spot_cache is not None:
+                return DataFetcher._spot_cache, None
+            if DataFetcher._spot_tried:
+                return None, "已尝试过 stock_zh_index_spot_em，本次跳过"
+            try:
+                DataFetcher._spot_cache = self.ak.stock_zh_index_spot_em()
+                DataFetcher._spot_tried = True
+                return DataFetcher._spot_cache, None
+            except Exception as e:
+                DataFetcher._spot_tried = True
+                err_str = str(e)
+                if 'RemoteDisconnected' in err_str or 'push2.eastmoney.com' in err_str:
+                    DataFetcher._akshare_unavailable = True
+                    logger.warning(f"akshare 东方财富接口不可用: {e}")
+                return None, str(e)
 
     def get_index_data(self, index_code, dt):
         """
@@ -137,20 +188,20 @@ class DataFetcher:
                             amount_val = float(amount_raw)
                         except:
                             amount_val = 0
-                        data = {
-                            "ts_code": index_code,
-                            "name": self._get_index_name(index_code),
-                            "trade_date": date_str,
-                            "close": float(row['最新价']),
-                            "open": float(row['今开']) if pd.notna(row.get('今开', None)) and row.get('今开', None) not in ['-', None] else float(row['最新价']),
-                            "high": float(row['最高']) if pd.notna(row.get('最高', None)) and row.get('最高', None) not in ['-', None] else float(row['最新价']),
-                            "low": float(row['最低']) if pd.notna(row.get('最低', None)) and row.get('最低', None) not in ['-', None] else float(row['最新价']),
-                            "pre_close": round(pre_close, 2),
-                            "change": round(float(row.get('涨跌额', 0)) if pd.notna(row.get('涨跌额', 0)) else 0, 4),
-                            "change_pct": change_pct,
-                            "vol": int(float(row.get('成交量', 0)) if pd.notna(row.get('成交量', 0)) else 0),
-                            "amount": int(amount_val)
-                        }
+                        data = self._build_index_data(
+                            index_code=index_code,
+                            date_str=date_str,
+                            close=float(row['最新价']),
+                            open_price=float(row['今开']) if pd.notna(row.get('今开', None)) and row.get('今开', None) not in ['-', None] else float(row['最新价']),
+                            high=float(row['最高']) if pd.notna(row.get('最高', None)) and row.get('最高', None) not in ['-', None] else float(row['最新价']),
+                            low=float(row['最低']) if pd.notna(row.get('最低', None)) and row.get('最低', None) not in ['-', None] else float(row['最新价']),
+                            pre_close=round(pre_close, 2),
+                            change=round(float(row.get('涨跌额', 0)) if pd.notna(row.get('涨跌额', 0)) else 0, 4),
+                            change_pct=change_pct,
+                            vol=int(float(row.get('成交量', 0)) if pd.notna(row.get('成交量', 0)) else 0),
+                            amount=int(amount_val),
+                            source="akshare_spot",
+                        )
                         set_cache(cache_key, data, namespace='akshare', ttl=3600)
                         logger.info(f"✅ akshare(spot) 获取指数成功: {index_code} close={data['close']} change={change_pct}% amount={amount_val/1e8:.0f}亿")
                         return {"success": True, "data": data, "source": "akshare_spot", "cached": False}
@@ -226,20 +277,20 @@ class DataFetcher:
                 close = float(row['close'])
                 pct_chg = float(row['pctChg']) if row['pctChg'] else 0.0
 
-                data = {
-                    "ts_code": index_code,
-                    "name": self._get_index_name(index_code),
-                    "trade_date": row['date'],
-                    "close": close,
-                    "open": float(row['open']),
-                    "high": float(row['high']),
-                    "low": float(row['low']),
-                    "pre_close": round(close / (1 + pct_chg / 100), 2) if pct_chg != -100 else close,
-                    "change": round(close * pct_chg / 100, 4),
-                    "change_pct": pct_chg,
-                    "vol": int(float(row['volume'])) if row['volume'] else 0,
-                    "amount": int(float(row['amount'])) if row['amount'] else 0
-                }
+                data = self._build_index_data(
+                    index_code=index_code,
+                    date_str=row['date'],
+                    close=close,
+                    open_price=float(row['open']),
+                    high=float(row['high']),
+                    low=float(row['low']),
+                    pre_close=round(close / (1 + pct_chg / 100), 2) if pct_chg != -100 else close,
+                    change=round(close * pct_chg / 100, 4),
+                    change_pct=pct_chg,
+                    vol=int(float(row['volume'])) if row['volume'] else 0,
+                    amount=int(float(row['amount'])) if row['amount'] else 0,
+                    source="baostock",
+                )
 
                 set_cache(cache_key, data, namespace='baostock', ttl=3600)
                 logger.info(f"✅ baostock 获取指数成功: {index_code} close={data['close']} change={pct_chg}% amount={float(row['amount'])/1e8:.0f}亿")
@@ -255,19 +306,17 @@ class DataFetcher:
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(_baostock_worker)
                 try:
-                    result = future.result(timeout=20)  # 20秒超时
+                    result = future.result(timeout=TIMEOUTS['baostock_query_sec'])
                     return result
                 except FuturesTimeoutError:
-                    logger.warning(f"baostock 查询 {index_code} 超时（20s），跳过该指数")
-                    return {"success": False, "data": None, "error": "baostock query timeout (20s)", "source": "baostock"}
-        except Exception as e:
-            logger.warning(f"ThreadPoolExecutor 异常: {e}")
-            return {"success": False, "data": None, "error": str(e), "source": "baostock"}
+                    timeout_sec = TIMEOUTS['baostock_query_sec']
+                    logger.warning(f"baostock 查询 {index_code} 超时（{timeout_sec}s），跳过该指数")
+                    return {"success": False, "data": None, "error": f"baostock query timeout ({timeout_sec}s)", "source": "baostock"}
         except ImportError:
             logger.debug("baostock 未安装，跳过")
             return {"success": False, "data": None, "error": "baostock not installed", "source": "baostock"}
         except Exception as e:
-            logger.debug(f"baostock 获取指数失败: {e}")
+            logger.warning(f"baostock 获取指数失败: {e}")
             return {"success": False, "data": None, "error": str(e), "source": "baostock"}
 
     def _get_index_data_yfinance(self, index_code, dt):
@@ -276,12 +325,7 @@ class DataFetcher:
         cache_key = f'index_{index_code}_{date_str}'
         try:
             import yfinance as yf
-            yf_map = {
-                '000001.SH': '000001.SS', '399001.SZ': '399001.SZ',
-                '399006.SZ': '399006.SZ', '000688.SH': '000688.SS',
-                '399673.SZ': '399673.SZ',
-            }
-            yf_code = yf_map.get(index_code, index_code)
+            yf_code = YFINANCE_INDEX_MAP.get(index_code, index_code)
             ticker = yf.Ticker(yf_code)
             hist = ticker.history(period="5d")
             if not hist.empty:
@@ -296,20 +340,20 @@ class DataFetcher:
                     change = latest_close - prev_close
                     change_pct = round(change / prev_close * 100, 2) if prev_close != 0 else 0.0
                     latest = hist.iloc[-1]
-                    data = {
-                        "ts_code": index_code,
-                        "name": self._get_index_name(index_code),
-                        "trade_date": format_date(latest.name),
-                        "close": latest_close,
-                        "open": float(latest['Open']),
-                        "high": float(latest['High']),
-                        "low": float(latest['Low']),
-                        "pre_close": prev_close,
-                        "change": round(change, 2),
-                        "change_pct": change_pct,
-                        "vol": int(latest['Volume']) if 'Volume' in latest else 0,
-                        "amount": 0
-                    }
+                    data = self._build_index_data(
+                        index_code=index_code,
+                        date_str=format_date(latest.name),
+                        close=latest_close,
+                        open_price=float(latest['Open']),
+                        high=float(latest['High']),
+                        low=float(latest['Low']),
+                        pre_close=prev_close,
+                        change=round(change, 2),
+                        change_pct=change_pct,
+                        vol=int(latest['Volume']) if 'Volume' in latest else 0,
+                        amount=0,
+                        source="yfinance",
+                    )
                     set_cache(cache_key, data, namespace='yfinance', ttl=3600)
                     logger.info(f"✅ yfinance 获取指数: {index_code} change={change_pct}%")
                     return {"success": True, "data": data, "source": "yfinance", "cached": False}
@@ -326,19 +370,7 @@ class DataFetcher:
         return index_code
 
     def _get_index_name(self, index_code):
-        names = {
-            "000001.SH": "上证指数",
-            "399001.SZ": "深证成指",
-            "399006.SZ": "创业板指",
-            "000688.SH": "科创50",
-            "000016.SH": "上证50",
-            "000300.SH": "沪深300",
-            "000905.SH": "中证500",
-            "399673.SZ": "创业板50",
-            "000906.SH": "中证800",
-            "899050.BJ": "北证50"
-        }
-        return names.get(index_code, index_code)
+        return INDEX_NAMES.get(index_code, index_code)
 
     def get_market_sentiment(self, dt, index_cache=None):
         date_str = format_date(dt)
@@ -478,7 +510,7 @@ class DataFetcher:
             }
 
             if cache_key:
-                set_cache(cache_key, data, namespace='tushare', ttl=3600)
+                set_cache(cache_key, data, namespace='akshare', ttl=3600)
             logger.info(f"✅ tushare 情绪: 涨停{limit_up_count}/连板{max_consec_up}/跌停{limit_down_count}/炸板{failed_limit_up}")
             return {"success": True, "data": data, "source": "tushare", "cached": False}
 
@@ -814,7 +846,7 @@ class DataFetcher:
             result = selected[:10]
 
             if cache_key:
-                set_cache(cache_key, result, namespace='tushare', ttl=3600)
+                set_cache(cache_key, result, namespace='akshare', ttl=3600)
             logger.info(f"✅ tushare 龙虎榜: {len(result)} 条")
             return {"success": True, "data": result, "source": "tushare", "cached": False}
 
@@ -840,13 +872,18 @@ class DataFetcher:
         mx_api_key = self._get_mx_apikey()
         if mx_api_key:
             try:
-                import requests
-
                 def _do_news_request(api_key):
                     url = 'https://mkapi2.dfcfs.com/finskillshub/api/claw/news-search'
                     headers = {'Content-Type': 'application/json', 'apikey': api_key}
                     payload = {'query': f'A股 {date_str} 财经新闻'}
-                    return requests.post(url, json=payload, headers=headers, timeout=15)
+                    return post_json_with_retry(
+                        url=url,
+                        payload=payload,
+                        headers=headers,
+                        timeout=TIMEOUTS['mx_news_sec'],
+                        retries=RETRY_POLICY['http_retries'],
+                        backoff_seconds=RETRY_POLICY['http_backoff_seconds'],
+                    )
 
                 resp = _do_news_request(mx_api_key)
                 if resp.status_code == 200:
@@ -873,6 +910,12 @@ class DataFetcher:
                             return {"success": True, "data": news_items[:limit], "source": "mx-search", "cached": False}
                 else:
                     logger.warning(f"mx-search 请求失败: {resp.status_code}")
+            except requests.Timeout:
+                logger.warning("mx-search 请求超时")
+            except requests.ConnectionError as e:
+                logger.warning(f"mx-search 连接失败: {e}")
+            except requests.RequestException as e:
+                logger.warning(f"mx-search 请求异常: {e}")
             except Exception as e:
                 logger.warning(f"mx-search 获取新闻失败: {e}")
 
@@ -900,16 +943,16 @@ class DataFetcher:
 
                     related_stocks = [s.get('secuName') for s in secu_list if s.get('secuName')]
 
-                    news_list.append({
-                        "title": title,
-                        "content": content[:300],
-                        "source": source,
-                        "url": item.get('jumpUrl', ''),
-                        "publish_time": date if date else format_date(datetime.now(), '%Y-%m-%d %H:%M:%S'),
-                        "importance": "high" if secu_list else "medium",
-                        "related_sectors": [],
-                        "related_stocks": related_stocks[:3]
-                    })
+                    news_list.append(asdict(NewsItem(
+                        title=title,
+                        content=content[:300],
+                        source=source,
+                        url=item.get('jumpUrl', ''),
+                        publish_time=date if date else format_date(datetime.now(), '%Y-%m-%d %H:%M:%S'),
+                        importance="high" if secu_list else "medium",
+                        related_sectors=[],
+                        related_stocks=related_stocks[:3],
+                    )))
 
         return news_list
     def get_futures_data(self):
@@ -941,10 +984,9 @@ class DataFetcher:
         # 优先级1：使用 mx-data Skill（需要 MX_APIKEY）
         self._load_env()  # 确保 .env 已加载
         mx_apikey = os.getenv('MX_APIKEY')
-        logger.info(f"[DEBUG] MX_APIKEY状态: {'已设置' if mx_apikey else '未设置'}")
+        logger.debug(f"MX_APIKEY状态: {'已设置' if mx_apikey else '未设置'}")
         if mx_apikey:
             try:
-                import requests
                 url = "https://mkapi2.dfcfs.com/finskillshub/api/claw/query"
                 headers = {"apikey": mx_apikey}
 
@@ -958,16 +1000,23 @@ class DataFetcher:
 
                 def _fetch_one(query_key):
                     query, key = query_key
-                    logger.info(f"[DEBUG] 查询期指: {query}")
+                    logger.debug(f"查询期指: {query}")
                     payload = {"toolQuery": query}
-                    r = requests.post(url, json=payload, headers=headers, timeout=12)
+                    r = post_json_with_retry(
+                        url=url,
+                        payload=payload,
+                        headers=headers,
+                        timeout=TIMEOUTS['mx_futures_sec'],
+                        retries=RETRY_POLICY['http_retries'],
+                        backoff_seconds=RETRY_POLICY['http_backoff_seconds'],
+                    )
                     if r.status_code == 200:
                         return key, r.json()
                     return key, None
 
                 with ThreadPoolExecutor(max_workers=2) as pool:
                     futures_map = {pool.submit(_fetch_one, q): q[1] for q in queries}
-                    for fut in as_completed(futures_map, timeout=15):
+                    for fut in as_completed(futures_map, timeout=TIMEOUTS['mx_futures_parallel_wait_sec']):
                         try:
                             key, result = fut.result()
                             if result:
@@ -984,6 +1033,12 @@ class DataFetcher:
                     sources.append('mx-data')
                 else:
                     logger.warning("mx-data 未返回任何期指数据")
+            except requests.Timeout:
+                logger.warning("mx-data 期指请求超时")
+            except requests.ConnectionError as e:
+                logger.warning(f"mx-data 期指连接失败: {e}")
+            except requests.RequestException as e:
+                logger.warning(f"mx-data 期指请求异常: {e}")
             except Exception as e:
                 logger.warning(f"mx-data 获取期指失败: {e}")
                 import traceback
@@ -993,10 +1048,15 @@ class DataFetcher:
         if not futures_data['futures'].get('A50') and mx_apikey:
             logger.info("A50期指未获取到，改用 mx-data 查上证50实时行情作为替代")
             try:
-                import requests as _req
                 url2 = "https://mkapi2.dfcfs.com/finskillshub/api/claw/query"
-                resp2 = _req.post(url2, json={"toolQuery": "上证50 最新价 涨跌幅"},
-                                  headers={"apikey": mx_apikey}, timeout=10)
+                resp2 = post_json_with_retry(
+                    url=url2,
+                    payload={"toolQuery": "上证50 最新价 涨跌幅"},
+                    headers={"apikey": mx_apikey},
+                    timeout=TIMEOUTS['mx_futures_a50_fallback_sec'],
+                    retries=RETRY_POLICY['http_retries'],
+                    backoff_seconds=RETRY_POLICY['http_backoff_seconds'],
+                )
                 if resp2.status_code == 200:
                     d2 = resp2.json()
                     tables2 = d2['data']['data']['searchDataResultDTO']['dataTableDTOList']
@@ -1009,12 +1069,12 @@ class DataFetcher:
                                 vals = td2.get(fid, [])
                                 if vals and vals[0] not in ['-', '', None]:
                                     chg = float(str(vals[0]).strip().rstrip('%'))
-                                    futures_data['futures']['A50'] = {
-                                        "name": "上证50(A50替代)",
-                                        "code": "000016.SH",
-                                        "change_pct": round(chg, 2),
-                                        "impact": self._generate_impact_text(chg, "上证50")
-                                    }
+                                    futures_data['futures']['A50'] = asdict(FuturesItem(
+                                        name="上证50(A50替代)",
+                                        code="000016.SH",
+                                        change_pct=round(chg, 2),
+                                        impact=self._generate_impact_text(chg, "上证50"),
+                                    ))
                                     sources.append('mx-data(A50替代)')
                                     logger.info(f"✅ mx-data 上证50替代A50: {chg}%")
                                     break
@@ -1028,18 +1088,18 @@ class DataFetcher:
             try:
                 import urllib.request
                 url = "http://hq.sinajs.cn/list=CFF_RE_IF"
-                content = urllib.request.urlopen(url, timeout=5).read().decode('gbk')
+                content = urllib.request.urlopen(url, timeout=TIMEOUTS['sina_sec']).read().decode('gbk')
                 parts = content.split('"')[1].split(',')
                 if len(parts) >= 6:
                     change_pct_str = parts[5]  # 涨跌幅百分比
                     change_pct = float(change_pct_str) if change_pct_str else 0.0
 
-                    futures_data['futures']['CSI300'] = {
-                        "name": "沪深300期指",
-                        "code": "CFF_RE_IF",
-                        "change_pct": change_pct,
-                        "impact": self._generate_impact_text(change_pct, "沪深300")
-                    }
+                    futures_data['futures']['CSI300'] = asdict(FuturesItem(
+                        name="沪深300期指",
+                        code="CFF_RE_IF",
+                        change_pct=change_pct,
+                        impact=self._generate_impact_text(change_pct, "沪深300"),
+                    ))
                     sources.append('sina(CSI300)')
                     logger.info(f"✅ 新浪财经API 获取 CSI300 数据成功")
             except Exception as e:
@@ -1047,7 +1107,7 @@ class DataFetcher:
 
         # 检查：至少有一个期指数据
         if futures_data['futures']:
-            set_cache(cache_key, futures_data, namespace='combined', ttl=600)
+            set_cache(cache_key, futures_data, namespace='mx_data', ttl=600)
             source_str = ' + '.join(sources) if sources else 'unknown'
             logger.info(f"✅ 期指数据获取成功（来源: {source_str}）")
             return {"success": True, "data": futures_data, "source": source_str, "cached": False}
@@ -1126,8 +1186,12 @@ class DataFetcher:
                         headers={'Content-Type': 'application/json', 'apikey': api_key},
                         method='POST'
                     )
-                    with urllib.request.urlopen(req, timeout=8) as resp:
-                        return json.loads(resp.read().decode('utf-8'))
+                    return urlopen_json_with_retry(
+                        req=req,
+                        timeout=TIMEOUTS['mx_watchlist_sec'],
+                        retries=RETRY_POLICY['http_retries'],
+                        backoff_seconds=RETRY_POLICY['http_backoff_seconds'],
+                    )
 
                 # 用当前有效 key 请求（已耗尽时自动取备用 key）
                 cur_key = self._get_mx_apikey()
@@ -1531,13 +1595,14 @@ class DataFetcher:
                         logger.debug(f"跳过历史收盘表，保留实时行情: {future_key}")
                         continue
 
-                    futures_data['futures'][future_key] = {
-                        "name": "A50期指" if future_key == 'A50' else "沪深300期指",
-                        "code": "CFF_RE_IF",
-                        "change_pct": change_pct,
-                        "is_realtime": is_realtime,
-                        "impact": self._generate_impact_text(change_pct, "A50" if future_key == 'A50' else "沪深300")
-                    }
+                    item = asdict(FuturesItem(
+                        name="A50期指" if future_key == 'A50' else "沪深300期指",
+                        code="CFF_RE_IF",
+                        change_pct=change_pct,
+                        impact=self._generate_impact_text(change_pct, "A50" if future_key == 'A50' else "沪深300"),
+                    ))
+                    item["is_realtime"] = is_realtime
+                    futures_data['futures'][future_key] = item
                     logger.info(f"✅ 解析到{future_key}: {change_pct}% ({'实时' if is_realtime else '历史收盘'})")
 
         except Exception as e:
@@ -1622,7 +1687,7 @@ class DataFetcher:
         # ── 第二层：mx-data 行业资金流兜底 ──
         result_mx = self._get_industry_fund_flow_mx_data()
         if result_mx.get('success'):
-            set_cache(cache_key, result_mx['data'], namespace='mx_data', ttl=3600)
+            set_cache(cache_key, result_mx['data'], namespace='akshare', ttl=3600)
             logger.info(f"✅ 行业资金流成功(mx-data): {result_mx['data']['total_industries']} 个行业")
             return result_mx
 
@@ -1650,8 +1715,12 @@ class DataFetcher:
                 headers={'Content-Type': 'application/json', 'apikey': mx_apikey},
                 method='POST'
             )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                raw = json.loads(resp.read().decode('utf-8'))
+            raw = urlopen_json_with_retry(
+                req=req,
+                timeout=TIMEOUTS['mx_industry_flow_sec'],
+                retries=RETRY_POLICY['http_retries'],
+                backoff_seconds=RETRY_POLICY['http_backoff_seconds'],
+            )
 
             api_status = raw.get('status', 0)
             if api_status == 0:
@@ -1667,8 +1736,12 @@ class DataFetcher:
                         headers={'Content-Type': 'application/json', 'apikey': backup},
                         method='POST'
                     )
-                    with urllib.request.urlopen(req2, timeout=15) as resp2:
-                        raw = json.loads(resp2.read().decode('utf-8'))
+                    raw = urlopen_json_with_retry(
+                        req=req2,
+                        timeout=TIMEOUTS['mx_industry_flow_sec'],
+                        retries=RETRY_POLICY['http_retries'],
+                        backoff_seconds=RETRY_POLICY['http_backoff_seconds'],
+                    )
                 else:
                     return {"success": False, "data": None, "error": f"mx-data 调用耗尽 status={api_status}", "source": "none"}
             else:
@@ -1795,13 +1868,8 @@ class DataFetcher:
             prev_dt = parse_date(date_str) - timedelta(days=1)
             query = f"international events affect China stock market {format_date(prev_dt, '%Y-%m-%d')} trade war oil Fed geopolitical"
 
+            self._load_env()
             api_key = os.getenv('TAVILY_API_KEY', '')
-            if not api_key:
-                from dotenv import load_dotenv
-                dotenv_path = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '.env'))
-                if os.path.exists(dotenv_path):
-                    load_dotenv(dotenv_path, override=True)
-                api_key = os.getenv('TAVILY_API_KEY', '')
 
             if api_key:
                 payload = json.dumps({
@@ -1817,7 +1885,7 @@ class DataFetcher:
                     headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'},
                     method='POST'
                 )
-                with urllib.request.urlopen(req, timeout=15) as resp:
+                with urllib.request.urlopen(req, timeout=TIMEOUTS['tavily_sec']) as resp:
                     results = json.loads(resp.read().decode('utf-8'))
 
                 if results.get('answer'):
@@ -1908,7 +1976,7 @@ class DataFetcher:
                     })
 
         if events:
-            set_cache(cache_key, events, namespace='mx_search', ttl=21600)
+            set_cache(cache_key, events, namespace='tavily', ttl=21600)
             logger.info(f"✅ 国际事件获取成功: {len(events)} 条")
             return {"success": True, "data": events, "source": "combined", "cached": False}
         else:
@@ -1917,82 +1985,23 @@ class DataFetcher:
 
     def _classify_event_category(self, text):
         """根据事件文本自动分类"""
-        t = text.lower()
-        if any(k in t for k in ['石油', '原油', 'oil', 'opec', '能源', '油价']):
-            return "能源"
-        elif any(k in t for k in ['贸易', '关税', 'tariff', '制裁', '制裁', 'wto']):
-            return "贸易战"
-        elif any(k in t for k in ['美联储', 'fed', '利率', '加息', '降息', '通胀', 'cpi', 'fomc']):
-            return "货币政策"
-        elif any(k in t for k in ['战争', '冲突', '导弹', '军事', '海峡', '制裁']):
-            return "地缘政治"
-        elif any(k in t for k in ['科技', '芯片', '半导体', 'huawei', '华为', '制裁']):
-            return "科技制裁"
-        elif any(k in t for k in ['黄金', 'gold', '贵金属']):
-            return "大宗商品"
-        elif any(k in t for k in ['汇率', 'dollar', '美元', '人民币', 'rmb', 'forex', '汇率']):
-            return "汇率"
-        else:
-            return "宏观经济"
+        return classify_event_category(text)
 
     def _judge_impact_level(self, text):
         """判断事件影响等级"""
-        t = text.lower()
-        high_words = ['战', '危机', '暴涨', '暴跌', '制裁', '冲突', '紧急', '崩盘', '暴雷']
-        if any(w in t for w in high_words):
-            return "high"
-        return "medium"
+        return judge_impact_level(text)
 
     def _generate_a_share_impact(self, text):
         """根据事件文本生成对 A股的影响说明"""
-        t = text.lower()
-        if any(k in t for k in ['石油', '原油', 'oil', '油价']):
-            if any(w in t for w in ['涨', '升', '飙升']):
-                return "油价上涨推升输入性通胀压力，不利航空/化工/物流等成本敏感行业，利好石油开采/新能源替代板块"
-            else:
-                return "油价下跌利好航空物流降成本，利空石油开采板块"
-        elif any(k in t for k in ['关税', '贸易', '制裁']):
-            return "贸易摩擦升级打压出口企业，国产替代/内需受益，出口链承压"
-        elif any(k in t for k in ['美联储', 'fed', '加息']):
-            return "美联储鹰派信号或加剧外资流出压力，人民币承压，北向资金可能减仓"
-        elif any(k in t for k in ['降息', '宽松']):
-            return "降息利好全球风险偏好，外资或回流新兴市场，A股获支撑"
-        elif any(k in t for k in ['美元', 'dollar']):
-            if any(w in t for w in ['涨', '强', '升']):
-                return "美元走强压制新兴市场资产价格，人民币汇率承压，外资流出概率上升"
-            else:
-                return "美元走弱利好新兴市场资产流入"
-        else:
-            return "事件可能通过情绪面传导至A股市场，关注相关板块联动"
+        return generate_a_share_impact(text)
 
     def _get_affected_sectors(self, text):
         """根据事件文本提取受影响板块"""
-        t = text.lower()
-        sectors = []
-        if any(k in t for k in ['石油', '原油', 'oil', '能源']):
-            sectors += ['石油石化', '新能源', '航空', '化工', '物流']
-        if any(k in t for k in ['贸易', '关税', '出口']):
-            sectors += ['出口链', '外贸', '国产替代', '半导体']
-        if any(k in t for k in ['半导体', '芯片', '科技', '华为']):
-            sectors += ['半导体', '信创', '国产替代']
-        if any(k in t for k in ['黄金', 'gold']):
-            sectors += ['黄金', '贵金属']
-        if any(k in t for k in ['美元', '汇率']):
-            sectors += ['银行', '地产', '出口链']
-        if any(k in t for k in ['美联储', '利率', '降息', '通胀']):
-            sectors += ['大盘蓝筹', '券商']
-        return sectors if sectors else ['大盘']
+        return infer_affected_sectors(text)
 
     def _get_a_share_impact_sectors(self, name, chg):
         """根据美股指数涨跌输出A股关联板块"""
-        sectors = {"大盘", "大盘蓝筹"}
-        if name == "nasdaq":
-            sectors = ["科技", "半导体", "人工智能", "消费电子"]
-        elif name == "sp500":
-            sectors = ["大盘蓝筹", "消费", "医药"]
-        elif name == "dow":
-            sectors = ["金融", "工业", "能源"]
-        return list(sectors)
+        return infer_a_share_impact_sectors(name, chg)
 
     def get_major_indices(self, dt):
         """
@@ -2005,19 +2014,7 @@ class DataFetcher:
         if cached is not None:
             return {"success": True, "data": cached, "source": "cache", "cached": True}
 
-        # 目标指数列表（10个）
-        indices_config = {
-            "000001.SH": "上证指数",
-            "399001.SZ": "深证成指",
-            "399006.SZ": "创业板指",
-            "000688.SH": "科创50",
-            "899050.BJ": "北证50",
-            "000016.SH": "上证50",
-            "000300.SH": "沪深300",
-            "000905.SH": "中证500",
-            "399673.SZ": "创业板50",
-            "000906.SH": "中证800"
-        }
+        indices_config = dict(ALL_INDICES)
 
         result = {}
         errors = []
@@ -2028,7 +2025,7 @@ class DataFetcher:
             for future in futures:
                 code, name = futures[future]
                 try:
-                    idx_data = future.result(timeout=30)  # 每只指数30s超时
+                    idx_data = future.result(timeout=TIMEOUTS['major_index_single_sec'])
                     if idx_data.get('success') and idx_data.get('data'):
                         result[code] = {
                             "code": code,
@@ -2339,7 +2336,7 @@ class DataFetcher:
             }
 
             if cache_key:
-                set_cache(cache_key, result, namespace='tushare', ttl=3600)
+                set_cache(cache_key, result, namespace='depth', ttl=3600)
             logger.info(f"✅ tushare 盘面深度: 涨停{total_limit_up}/跌停{total_limit_down}/炸板率{break_rate}%")
             return {"success": True, "data": result, "source": "tushare", "cached": False}
 

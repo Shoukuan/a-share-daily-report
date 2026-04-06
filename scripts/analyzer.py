@@ -6,6 +6,7 @@
 import os
 import yaml
 
+from constants import SCORING_CONFIG, NEWS_KEYWORD_MAP, THEME_KEYWORDS
 from utils import get_logger
 
 logger = get_logger('analyzer')
@@ -92,18 +93,7 @@ class Analyzer:
             
             # 3. 机会识别（从新闻提取关键词）
             opportunities = []
-            keyword_map = [
-                (['AI', '人工智能', '算力', '大模型', 'GPT'], "AI算力产业链持续受益"),
-                (['芯片', '半导体', '光刻', '存储'], "半导体国产化方向值得关注"),
-                (['新能源', '锂电', '储能', '光伏', '风电'], "新能源板块关注政策催化"),
-                (['医药', '创新药', '生物', 'CXO', '医疗'], "创新药及医疗器械关注政策支持"),
-                (['军工', '国防', '航天', '导弹'], "军工板块关注订单落地"),
-                (['消费', '零售', '餐饮', '旅游', '酒店'], "消费复苏方向关注数据验证"),
-                (['央企', '国企', '国资', '重组'], "央国企重组方向关注政策推进"),
-                (['机器人', '人形', '自动化'], "机器人产业链关注产能爬坡"),
-                (['黄金', '贵金属', '大宗', '铜', '铝'], "贵金属及大宗商品关注价格走势"),
-                (['涨停', '连板', '龙头', '强势'], "强势股关注高度板块续航能力"),
-            ]
+            keyword_map = NEWS_KEYWORD_MAP
             for keys, desc in keyword_map:
                 for news_item in news:
                     title = news_item.get('title', '')
@@ -189,7 +179,13 @@ class Analyzer:
                 emotion_desc = f"涨停{limit_up}家，市场情绪一般"
 
             # 3. 资金描述
-            north = money_flow.get('northbound', {}).get('total_net_inflow', 0) if isinstance(money_flow.get('northbound'), dict) else 0
+            north_raw = money_flow.get('northbound')
+            if isinstance(north_raw, dict):
+                north = north_raw.get('total_net_inflow', 0)
+            elif isinstance(north_raw, (int, float)):
+                north = north_raw
+            else:
+                north = 0
             if north > 1e9:
                 capital_desc = f"北向资金净流入{north/1e8:.1f}亿元"
             elif north < -1e9:
@@ -438,12 +434,17 @@ class Analyzer:
         """
         try:
             sentiment_data = data.get('sentiment', {}).get('data', {})
-            index_data = data.get('index_sh', {}).get('data', {})
+            money_flow_data = data.get('money_flow', {}).get('data', {})
             position_data = data.get('position', {}).get('data', {})
             
             # 基于情绪分和仓位决定策略
-            emotion_score = position_data.get('emotion_score', 50)
-            position_min = position_data.get('position_min', 30)
+            if position_data:
+                emotion_score = position_data.get('emotion_score', 50)
+                position_min = position_data.get('position_min', 30)
+            else:
+                # 兼容调用方未提前注入 position 的情况（当前主流程即如此）
+                emotion_score = self._calc_emotion_score(sentiment_data, money_flow_data)
+                position_min = 30 + (emotion_score / 100.0) * 40
             
             if emotion_score >= 70 and position_min >= 50:
                 strategy = "offensive"
@@ -709,17 +710,8 @@ class Analyzer:
             industry_sectors = sectors_data.get('industry', [])
             concept_sectors = sectors_data.get('concept', [])
 
-            # 预定义主题关键词映射
-            theme_keywords = {
-                "算力": ["人工智能", "AI", "算力", "大数据", "云计算"],
-                "半导体": ["半导体", "芯片", "集成电路", "国产芯片"],
-                "新能源": ["新能源", "充电桩", "光伏", "储能", "锂电池"],
-                "风电设备": ["风电", "风力发电", "发电机"],
-                "金属": ["金属", "钛", "镁", "稀土", "有色金属"],
-                "低空经济": ["低空", "航空", "飞行器"],
-                "商业航天": ["航天", "卫星", "火箭"],
-                "生物制造": ["生物", "医药", "制药", "生物制药"]
-            }
+            # 预定义主题关键词映射（来自 constants）
+            theme_keywords = THEME_KEYWORDS
 
             # 收集相关板块
             theme_sectors = []
@@ -912,38 +904,35 @@ class Analyzer:
             }
 
     def _calc_emotion_score(self, sentiment_data, money_flow_data):
-        """
-        计算市场情绪分数（0-100）
-        权重调整：
-        - 涨停家数：每10家加1分，上限30（即300家涨停达上限）
-        - 连板高度：每板加5分，上限20（6板+）
-        - 北向资金：>10亿加30分，<-10亿减30分
-        基准分50（中性）
-        """
-        score = 50  # 基准分50
+        """计算市场情绪分数（0-100），权重由 constants.SCORING_CONFIG 定义"""
+        score = SCORING_CONFIG['base_score']
 
-        # 涨停家数（每10家加1分，上限30分）
         limit_up = sentiment_data.get('limit_up_count', 0)
-        score += min(30, limit_up * 0.1)
+        score += min(
+            SCORING_CONFIG['limit_up_max_score'],
+            limit_up / SCORING_CONFIG['limit_up_per_point']
+        )
 
-        # 最高连板数（每板加5分，上限20分）
         max_consec = sentiment_data.get('max_consec_up', 0)
-        score += min(20, max_consec * 5)
+        score += min(
+            SCORING_CONFIG['consecutive_max_score'],
+            max_consec * SCORING_CONFIG['consecutive_per_point']
+        )
 
-        # 北向资金（正且 > 10亿加30分，负且 < -10亿减30分）
-        # 修复：northbound 可能为 None（get_money_flow 无 akshare 时返回 {northbound: None}）
         north_raw = money_flow_data.get('northbound')
         north = 0
         if isinstance(north_raw, dict):
             north = north_raw.get('total_net_inflow', 0)
         elif isinstance(north_raw, (int, float)):
             north = north_raw
-        if north > 1e9:  # > 10亿
-            score += 30
-        elif north < -1e9:  # < -10亿
-            score -= 30
+        threshold = SCORING_CONFIG['northbound_threshold']
+        north_score = SCORING_CONFIG['northbound_score']
+        if north > threshold:
+            score += north_score
+        elif north < -threshold:
+            score -= north_score
 
-        return max(0, min(100, score))  # 限制在0-100
+        return max(0, min(100, score))
 
     def _get_volatility(self, index_data):
         """
@@ -953,9 +942,8 @@ class Analyzer:
         需除以100转换为小数
         """
         change_pct = index_data.get('change_pct', 0)
-        # 转换为小数：如果值 > 1 可能是百分比（如0.63%显示为0.63），除以100
-        if abs(change_pct) > 0.1:  # 假设正常日波动不会超过10%
-            change_pct = change_pct / 100.0
+        # 统一按“百分比数值”转换为小数（例如 0.63 -> 0.0063）
+        change_pct = change_pct / 100.0
         return abs(change_pct)
 
     def classify_news(self, news_list):

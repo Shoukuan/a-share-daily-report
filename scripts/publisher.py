@@ -10,7 +10,7 @@
 import os
 import json
 from datetime import datetime
-from utils import get_logger, format_date
+from utils import get_logger, format_date, load_project_env
 
 logger = get_logger('publisher')
 
@@ -179,14 +179,11 @@ class Publisher:
             return user_id
 
         # 优先级4: 从 .env 文件加载
-        dotenv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '..', '..', '.env')
-        if os.path.exists(dotenv_path):
-            from dotenv import load_dotenv
-            load_dotenv(dotenv_path)
-            user_id = os.getenv('FEISHU_NOTIFY_OPEN_ID') or os.getenv('FEISHU_USER_OPEN_ID')
-            if user_id:
-                logger.debug(f"从 .env 文件加载: {user_id}")
-                return user_id
+        load_project_env(override=False)
+        user_id = os.getenv('FEISHU_NOTIFY_OPEN_ID') or os.getenv('FEISHU_USER_OPEN_ID')
+        if user_id:
+            logger.debug(f"从 .env 文件加载: {user_id}")
+            return user_id
 
         logger.warning("未找到 user_open_id 配置")
         return None

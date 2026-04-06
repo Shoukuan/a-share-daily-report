@@ -2,6 +2,9 @@
 国际事件查询补丁 — 插入到 data_fetcher.py 的 get_major_indices 方法之前
 """
 
+# 该文件是历史补丁片段，不参与运行；保留为参考，避免语法检查报错。
+if False:
+
     def get_international_events(self, dt=None):
         """
         获取昨夜今晨国际事件（可能影响 A股）

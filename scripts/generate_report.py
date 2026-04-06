@@ -8,15 +8,14 @@ import os
 import sys
 import argparse
 import yaml
-import signal
-import contextlib
 from datetime import datetime, date
 
 # 添加项目路径（让模块可以导入）
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
 
-from utils import get_logger, format_date
+from constants import TIMEOUTS
+from utils import get_logger, log_event, format_date, run_with_timeout, get_project_root
 from data_fetcher import DataFetcher
 from analyzer import Analyzer
 from renderer import Renderer
@@ -24,20 +23,6 @@ from trade_calendar import get_effective_date
 from publisher import Publisher
 
 logger = get_logger('report_generator')
-
-
-@contextlib.contextmanager
-def timeout(seconds):
-    """上下文管理器：为一段代码执行设置超时（秒）"""
-    def timeout_handler(signum, frame):
-        raise TimeoutError(f"操作超时（{seconds}秒）")
-    old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-    signal.alarm(seconds)
-    try:
-        yield
-    finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, old_handler)
 
 
 class ReportGenerator:
@@ -63,7 +48,7 @@ class ReportGenerator:
         self.renderer = Renderer(self.config)
         self.publisher = Publisher(self.config)
 
-        logger.info("ReportGenerator 初始化完成")
+        log_event(logger, "info", "report_generator_init", config_path=config_path)
 
     def _load_config(self, config_path):
         try:
@@ -84,39 +69,41 @@ class ReportGenerator:
         Returns:
             包含 markdown 和发布信息的字典
         """
-        logger.info("开始生成早报（总超时 180s）...")
+        total_timeout = TIMEOUTS['report_generate_total_sec']
+        log_event(logger, "info", "report_generate_start", mode="morning", timeout_sec=total_timeout)
         effective_dt = get_effective_date(dt, mode='morning')
         date_str = format_date(effective_dt)
-        logger.info(f"使用日期: {date_str}")
+        log_event(logger, "info", "report_effective_date", mode="morning", date=date_str)
 
         # 总体超时保护（步骤1-5）
         try:
-            with timeout(180):
+            def _do_generate():
                 logger.info("步骤1: 采集数据...")
                 data = self._fetch_morning_data(effective_dt)
-
                 logger.info("步骤2: 分析数据...")
                 analysis_result = self._analyze_morning_data(data)
-
                 logger.info("步骤3: 渲染报告...")
                 markdown = self.renderer.render_morning_report(analysis_result, effective_dt)
-
                 logger.info("步骤4: 保存报告...")
                 save_result = self._save_report(markdown, 'morning', effective_dt)
                 if isinstance(save_result, tuple):
                     output_path, pdf_path = save_result
                 else:
                     output_path, pdf_path = save_result, None
+                return markdown, output_path, pdf_path
+
+            markdown, output_path, pdf_path = run_with_timeout(_do_generate, total_timeout)
         except TimeoutError as e:
-            logger.error(f"早报生成超时: {e}")
+            log_event(logger, "error", "report_generate_timeout", mode="morning", error=e)
             raise
         except Exception as e:
-            logger.error(f"早报生成异常: {e}")
+            log_event(logger, "error", "report_generate_error", mode="morning", error=e)
             raise
 
         result = {
             'markdown': markdown,
             'output_path': output_path,
+            'report_path': output_path,
             'date': date_str,
             'mode': 'morning'
         }
@@ -124,13 +111,13 @@ class ReportGenerator:
             result['pdf_path'] = pdf_path
 
         if publish:
-            logger.info("步骤5: 发布到飞书...")
+            log_event(logger, "info", "report_publish_start", mode="morning")
             publish_result = self.publisher.publish_morning_report(
                 markdown, effective_dt, send_notification=True
             )
             result['publish'] = publish_result
 
-        logger.info(f"早报生成完成: {output_path}")
+        log_event(logger, "info", "report_generate_done", mode="morning", output_path=output_path)
         return result
 
     def generate_evening_report(self, dt=None, publish=False):
@@ -144,39 +131,41 @@ class ReportGenerator:
         Returns:
             包含 markdown 和发布信息的字典
         """
-        logger.info("开始生成晚报（总超时 180s）...")
+        total_timeout = TIMEOUTS['report_generate_total_sec']
+        log_event(logger, "info", "report_generate_start", mode="evening", timeout_sec=total_timeout)
         effective_dt = get_effective_date(dt, mode='evening')
         date_str = format_date(effective_dt)
-        logger.info(f"使用日期: {date_str}")
+        log_event(logger, "info", "report_effective_date", mode="evening", date=date_str)
 
         # 总体超时保护（步骤1-5）
         try:
-            with timeout(180):
+            def _do_generate():
                 logger.info("步骤1: 采集数据...")
                 data = self._fetch_evening_data(effective_dt)
-
                 logger.info("步骤2: 分析数据...")
                 analysis_result = self._analyze_evening_data(data)
-
                 logger.info("步骤3: 渲染报告...")
                 markdown = self.renderer.render_evening_report(analysis_result, effective_dt)
-
                 logger.info("步骤4: 保存报告...")
                 save_result = self._save_report(markdown, 'evening', effective_dt)
                 if isinstance(save_result, tuple):
                     output_path, pdf_path = save_result
                 else:
                     output_path, pdf_path = save_result, None
+                return markdown, output_path, pdf_path
+
+            markdown, output_path, pdf_path = run_with_timeout(_do_generate, total_timeout)
         except TimeoutError as e:
-            logger.error(f"晚报生成超时: {e}")
+            log_event(logger, "error", "report_generate_timeout", mode="evening", error=e)
             raise
         except Exception as e:
-            logger.error(f"晚报生成异常: {e}")
+            log_event(logger, "error", "report_generate_error", mode="evening", error=e)
             raise
 
         result = {
             'markdown': markdown,
             'output_path': output_path,
+            'report_path': output_path,
             'date': date_str,
             'mode': 'evening'
         }
@@ -184,13 +173,13 @@ class ReportGenerator:
             result['pdf_path'] = pdf_path
 
         if publish:
-            logger.info("步骤5: 发布到飞书...")
+            log_event(logger, "info", "report_publish_start", mode="evening")
             publish_result = self.publisher.publish_evening_report(
                 markdown, effective_dt, send_notification=True
             )
             result['publish'] = publish_result
 
-        logger.info(f"晚报生成完成: {output_path}")
+        log_event(logger, "info", "report_generate_done", mode="evening", output_path=output_path)
         return result
 
     def _fetch_morning_data(self, dt):
@@ -233,17 +222,7 @@ class ReportGenerator:
         data['news'] = self.data_fetcher.get_news(dt, limit=10)
 
         logger.info("获取自选股表现...")
-        try:
-            import yaml as _yaml
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            watchlist_path = self.config.get('watchlist', {}).get('path', 'config/watchlist.yaml')
-            if not os.path.isabs(watchlist_path):
-                watchlist_path = os.path.join(os.path.dirname(current_dir), watchlist_path)
-            with open(watchlist_path, 'r', encoding='utf-8') as f:
-                watchlist = _yaml.safe_load(f).get('watchlist', [])
-        except Exception as e:
-            logger.warning(f"加载自选股配置失败: {e}")
-            watchlist = []
+        watchlist = self.analyzer.watchlist
         perf_result = self.data_fetcher.get_watchlist_performance(watchlist, dt)
         data['watchlist_performance'] = perf_result.get('data', []) if perf_result.get('success') else []
         logger.info(f"自选股行情获取完成: {len(data['watchlist_performance'])} 只")
@@ -297,19 +276,7 @@ class ReportGenerator:
         data['news'] = self.data_fetcher.get_news(dt, limit=10)
 
         logger.info("获取自选股表现...")
-        # 读取自选股配置（与 Analyzer 相同逻辑）
-        watchlist_path = self.config.get('watchlist', {}).get('path', 'config/watchlist.yaml')
-        if not os.path.isabs(watchlist_path):
-            watchlist_path = os.path.join(os.path.dirname(current_dir), watchlist_path)
-        
-        try:
-            with open(watchlist_path, 'r', encoding='utf-8') as f:
-                watchlist_config = yaml.safe_load(f)
-                watchlist = watchlist_config.get('watchlist', [])
-        except Exception as e:
-            logger.warning(f"加载自选股配置失败: {e}")
-            watchlist = []
-        
+        watchlist = self.analyzer.watchlist
         perf_result = self.data_fetcher.get_watchlist_performance(watchlist, dt)
         data['watchlist_performance'] = perf_result.get('data', []) if perf_result.get('success') else []
 
@@ -408,7 +375,8 @@ class ReportGenerator:
 
     def _save_report(self, markdown, mode, dt):
         output_config = self.config.get('output', {})
-        base_dir = output_config.get('base_dir', 'reports')
+        base_dir = os.getenv('A_SHARE_OUTPUT_DIR', output_config.get('base_dir', 'reports'))
+        base_dir = os.path.expanduser(base_dir)
         sub_dir = output_config.get(f'{mode}_subdir', mode)
 
         # 处理绝对路径和相对路径
@@ -417,7 +385,7 @@ class ReportGenerator:
             base_path = base_dir
         else:
             # 如果是相对路径，使用项目根目录
-            project_root = os.path.dirname(current_dir)
+            project_root = get_project_root()
             base_path = os.path.join(project_root, base_dir)
         
         output_dir = os.path.join(base_path, sub_dir)
@@ -445,11 +413,12 @@ class ReportGenerator:
     def _export_pdf(self, markdown, md_path, mode, dt, pdf_config):
         """将 Markdown 报告导出为 PDF"""
         engine = pdf_config.get('engine', 'fpdf2')
-        pdf_output_dir = pdf_config.get('output_dir', 'reports/pdf')
+        pdf_output_dir = os.getenv('A_SHARE_PDF_OUTPUT_DIR', pdf_config.get('output_dir', 'reports/pdf'))
+        pdf_output_dir = os.path.expanduser(pdf_output_dir)
 
         # 构建 PDF 输出路径
         if not os.path.isabs(pdf_output_dir):
-            project_root = os.path.dirname(current_dir)
+            project_root = get_project_root()
             pdf_output_dir = os.path.join(project_root, pdf_output_dir)
         os.makedirs(pdf_output_dir, exist_ok=True)
 
@@ -502,7 +471,7 @@ class ReportGenerator:
 
             # 逐行写入（跳过表格，只渲染文本）
             in_table = False
-            for line in markdown_content.split('\n'):
+            for line_num, line in enumerate(markdown_content.split('\n'), start=1):
                 stripped = line.strip()
                 if not stripped:
                     pdf.ln(3)
@@ -547,8 +516,6 @@ class ReportGenerator:
                     clean = stripped.replace('**', '').replace('__', '').replace('*', '').replace('_', '')
                     if clean:
                         pdf.multi_cell(0, 4, clean)
-                except Exception:
-                    continue  # 跳过无法渲染的行
                 except Exception as e:
                     logger.warning(f"第 {line_num} 行渲染失败: {e}, 内容: {stripped[:80]}")
                     continue
@@ -636,7 +603,7 @@ def main():
         print(f"⚠️ 发布失败: {result.get('publish', {}).get('error', '未知错误')}")
 
     # 输出报告文件路径，供 OpenClaw Agent 读取后发布到飞书
-    print(f"REPORT_PATH:{result.get('report_path', '')}")
+    print(f"REPORT_PATH:{result.get('output_path', '')}")
 
 
 if __name__ == '__main__':

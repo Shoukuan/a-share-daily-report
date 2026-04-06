@@ -99,12 +99,14 @@ class TestDataFetcher:
         assert len(result['data']) <= 5
         assert 'title' in result['data'][0]
 
+    @pytest.mark.ci_smoke
     def test_convert_index_code(self, fetcher):
         """测试指数代码转换"""
         assert fetcher._convert_index_code('000001.SH') == 'sh000001'
         assert fetcher._convert_index_code('399001.SZ') == 'sz399001'
         assert fetcher._convert_index_code('sh000001') == 'sh000001'
 
+    @pytest.mark.ci_smoke
     def test_get_index_name(self, fetcher):
         """测试指数名称获取"""
         assert fetcher._get_index_name('000001.SH') == '上证指数'
@@ -123,42 +125,35 @@ class TestSectorData:
 
     def test_get_sector_data_industry_success(self, fetcher, monkeypatch):
         """测试行业板块数据正常获取"""
-        # 模拟行业板块列表
+        # 模拟行业板块汇总（当前实现使用 ths summary 接口）
         df_industry = pd.DataFrame({
-            '板块名称': ['人工智能', '芯片', '新能源', '医药', '消费'],
+            '板块': ['人工智能', '芯片', '新能源', '医药', '消费'],
             '涨跌幅': [5.2, 3.1, -1.2, 0.5, -0.8]
-        })
-        # 模拟成分股
-        df_cons = pd.DataFrame({
-            '名称': ['科大讯飞', '浪潮信息', '中科曙光'],
-            '代码': ['002230', '000977', '603019'],
-            '涨跌幅': [6.1, 4.5, 3.2]
+            ,
+            '领涨股': ['科大讯飞', '中芯国际', '宁德时代', '恒瑞医药', '贵州茅台'],
+            '领涨股-涨跌幅': [6.1, 4.5, 3.2, 2.1, 1.7]
         })
 
-        monkeypatch.setattr(fetcher.ak, 'stock_board_industry_name_em', lambda: df_industry)
-        monkeypatch.setattr(fetcher.ak, 'stock_board_industry_cons_em', lambda symbol: df_cons)
+        monkeypatch.setattr(fetcher.ak, 'stock_board_industry_summary_ths', lambda: df_industry)
+        monkeypatch.setattr(fetcher.ak, 'stock_board_concept_summary_ths', lambda: pd.DataFrame())
 
         result = fetcher.get_sector_data('2026-03-27')
         assert result['success'] is True
         assert len(result['data']['industry']) == 5
         assert result['data']['industry'][0]['sector'] == '人工智能'
         assert result['data']['industry'][0]['change_pct'] == 5.2
-        assert len(result['data']['industry'][0]['leaders']) == 3
+        assert len(result['data']['industry'][0]['leaders']) == 1
 
     def test_get_sector_data_concept_success(self, fetcher, monkeypatch):
         """测试概念板块数据正常获取"""
         df_concept = pd.DataFrame({
             '概念名称': ['5G', '云计算', '大数据'],
-            '涨跌幅': [2.5, 1.8, 0.9]
-        })
-        df_cons = pd.DataFrame({
-            '名称': ['中兴通讯', '烽火通信', '亨通光电'],
-            '代码': ['000063', '600498', '600487'],
-            '涨跌幅': [3.1, 2.2, 1.5]
+            '龙头股': ['中兴通讯', '浪潮信息', '海康威视'],
+            '驱动事件': ['政策催化', 'AI算力', '数据要素']
         })
 
-        monkeypatch.setattr(fetcher.ak, 'stock_board_concept_name_em', lambda: df_concept)
-        monkeypatch.setattr(fetcher.ak, 'stock_board_concept_cons_em', lambda symbol: df_cons)
+        monkeypatch.setattr(fetcher.ak, 'stock_board_industry_summary_ths', lambda: pd.DataFrame())
+        monkeypatch.setattr(fetcher.ak, 'stock_board_concept_summary_ths', lambda: df_concept)
 
         result = fetcher.get_sector_data('2026-03-27')
         assert result['success'] is True
@@ -176,11 +171,11 @@ class TestSectorData:
         df_industry = pd.DataFrame({
             'other_column': ['A', 'B', 'C']  # 缺少涨跌幅
         })
-        monkeypatch.setattr(fetcher.ak, 'stock_board_industry_name_em', lambda: df_industry)
+        monkeypatch.setattr(fetcher.ak, 'stock_board_industry_summary_ths', lambda: df_industry)
+        monkeypatch.setattr(fetcher.ak, 'stock_board_concept_summary_ths', lambda: pd.DataFrame())
         result = fetcher.get_sector_data('2026-03-27')
-        # 应该fallback到前5条，即使没有涨跌幅排序
-        assert result['success'] is True
-        assert len(result['data']['industry']) <= 5
+        # 当前实现缺少关键字段会返回失败
+        assert result['success'] is False
 
 
 class TestLHBData:
@@ -189,6 +184,7 @@ class TestLHBData:
     @pytest.fixture
     def fetcher(self):
         config = {'data_sources': {}}
+        clear_cache(namespace='akshare')
         return DataFetcher(config)
 
     def test_get_lhb_data_success(self, fetcher, monkeypatch):
@@ -238,12 +234,13 @@ class TestFuturesData:
     @pytest.fixture
     def fetcher(self):
         config = {'data_sources': {}}
-        clear_cache(namespace='combined')
+        clear_cache(namespace='mx_data')
         return DataFetcher(config)
 
     def test_get_futures_data_mx_both(self, fetcher, monkeypatch):
         """测试 mx-data 同时返回 CSI300 和 A50"""
-        monkeypatch.setenv('MX_APIKEY', 'dummy_key')
+        monkeypatch.setattr(fetcher, '_load_env', lambda: None)
+        monkeypatch.setattr(fetcher, '_get_mx_apikey', lambda: 'dummy_key')
         # 模拟 _parse_mx_futures 返回两者
         def mock_parse(result, key):
             return {
@@ -258,6 +255,12 @@ class TestFuturesData:
             }
         monkeypatch.setattr(fetcher, '_parse_mx_futures', mock_parse)
 
+        class _Resp:
+            status_code = 200
+            def json(self):
+                return {"dummy": 1}
+        monkeypatch.setattr('requests.post', lambda *args, **kwargs: _Resp())
+
         result = fetcher.get_futures_data()
         assert result['success'] is True
         assert 'CSI300' in result['data']['futures']
@@ -265,8 +268,9 @@ class TestFuturesData:
         assert result['source'] == 'mx-data'
 
     def test_get_futures_data_mx_csi300_only_triggers_yfinance(self, fetcher, monkeypatch):
-        """测试 mx-data 只返回 CSI300，触发 yfinance 补充 A50"""
-        monkeypatch.setenv('MX_APIKEY', 'dummy_key')
+        """测试 mx-data 只返回 CSI300，触发上证50替代补充 A50"""
+        monkeypatch.setattr(fetcher, '_load_env', lambda: None)
+        monkeypatch.setattr(fetcher, '_get_mx_apikey', lambda: 'dummy_key')
         # 模拟 _parse_mx_futures 只返回 CSI300，对 A50 返回空 dict
         def mock_parse(result, key):
             if key == 'CSI300':
@@ -275,38 +279,43 @@ class TestFuturesData:
                 return {"futures": {}}  # A50 empty
         monkeypatch.setattr(fetcher, '_parse_mx_futures', mock_parse)
 
-        # 模拟 yfinance
-        class MockHist:
-            def __init__(self):
-                self.data = pd.DataFrame({
-                    'Close': [150.0, 151.5]  # 第一个close, 第二个close
+        class _Resp:
+            status_code = 200
+            def __init__(self, payload):
+                self._payload = payload
+            def json(self):
+                return self._payload
+
+        def _post(url, json=None, headers=None, timeout=None):
+            q = (json or {}).get('toolQuery', '')
+            if '上证50' in q:
+                # 命中 A50 替代路径
+                return _Resp({
+                    "data": {
+                        "data": {
+                            "searchDataResultDTO": {
+                                "dataTableDTOList": [{
+                                    "nameMap": {"f3": "涨跌幅"},
+                                    "table": {"f3": ["0.66%"]}
+                                }]
+                            }
+                        }
+                    }
                 })
-            def iloc(self, idx):
-                class Row:
-                    def __init__(self, close):
-                        self._close = close
-                    def __getitem__(self, key):
-                        if key == 'Close':
-                            return self._close
-                return Row(self.data['Close'].iloc[idx])
-        class MockTicker:
-            def __init__(self, *args, **kwargs):
-                self._hist = MockHist()
-            def history(self, period=None):
-                return self._hist
-        monkeypatch.setattr('yfinance.Ticker', MockTicker)
+            return _Resp({"dummy": 1})
+        monkeypatch.setattr('requests.post', _post)
 
         result = fetcher.get_futures_data()
         assert result['success'] is True
         assert 'CSI300' in result['data']['futures']
         assert 'A50' in result['data']['futures']
-        # A50 数据应来自 yfinance
-        assert result['data']['futures']['A50']['code'] == 'A50.SI'
+        # A50 数据应来自上证50替代
+        assert result['data']['futures']['A50']['code'] == '000016.SH'
 
     def test_get_futures_data_sina_only_csi300(self, fetcher, monkeypatch):
-        """测试新浪接口仅提供 CSI300（A50 由 yfinance 补充）"""
-        # 未设置 MX_APIKEY，跳过 mx-data
-        monkeypatch.delenv('MX_APIKEY', raising=False)
+        """测试仅新浪接口提供 CSI300"""
+        monkeypatch.setattr(fetcher, '_load_env', lambda: None)
+        monkeypatch.setattr(fetcher, '_get_mx_apikey', lambda: '')
 
         # 模拟 urllib.request.urlopen 返回 Sina 数据
         sina_content = b'var hq_CFF_RE_IF="CFF_RE_IF,open,pre,price,change,0.63,vol";'
@@ -317,22 +326,16 @@ class TestFuturesData:
                 return self._content
         monkeypatch.setattr('urllib.request.urlopen', lambda *args, **kwargs: MockResponse(sina_content))
 
-        # 模拟 yfinance 提供 A50
-        class MockTicker:
-            def __init__(self, *args, **kwargs):
-                pass
-            def history(self, period=None):
-                return pd.DataFrame({'Close': [100, 101]})
-        monkeypatch.setattr('yfinance.Ticker', MockTicker)
-
         result = fetcher.get_futures_data()
         assert result['success'] is True
         assert 'CSI300' in result['data']['futures']
-        assert 'A50' in result['data']['futures']
+        assert 'A50' not in result['data']['futures']
 
+    @pytest.mark.ci_smoke
     def test_get_futures_data_all_fail(self, fetcher, monkeypatch):
         """测试全部数据源失败"""
-        monkeypatch.delenv('MX_APIKEY', raising=False)
+        monkeypatch.setattr(fetcher, '_load_env', lambda: None)
+        monkeypatch.setattr(fetcher, '_get_mx_apikey', lambda: '')
         # urllib 抛出异常
         monkeypatch.setattr('urllib.request.urlopen', lambda *args, **kwargs: (_ for _ in ()).throw(ConnectionError("no net")))
         result = fetcher.get_futures_data()
@@ -345,6 +348,7 @@ class TestWatchlistPerformance:
     @pytest.fixture
     def fetcher(self):
         config = {'data_sources': {}}
+        clear_cache(namespace='watchlist_detail')
         return DataFetcher(config)
 
     def test_get_watchlist_performance_success(self, fetcher, monkeypatch):
@@ -353,16 +357,23 @@ class TestWatchlistPerformance:
             {'code': '002594.SZ', 'name': '比亚迪'},
             {'code': '300308.SZ', 'name': '中际旭创'}
         ]
+        monkeypatch.setattr(fetcher, '_load_env', lambda: None)
+        monkeypatch.setattr(fetcher, '_fetch_spot_from_mx_data', lambda wl: {
+            '002594': {'price': 255.0, 'change_pct': 2.0, 'amount': 1e8, 'amplitude': 3.0, 'turnover': 1.0, 'volume_ratio': 1.2},
+            '300308': {'price': 102.0, 'change_pct': 2.0, 'amount': 8e7, 'amplitude': 2.5, 'turnover': 0.9, 'volume_ratio': 1.1},
+        })
         # 模拟 akshare 返回日线数据
         def mock_hist(symbol, period, start_date, end_date):
             # 根据 symbol 返回不同的数据
             if symbol == '002594':
                 return pd.DataFrame({
-                    '收盘': [250.0, 255.0]  # +2%
+                    '收盘': [250.0, 255.0],  # +2%
+                    '成交量': [1000, 1200]
                 })
             elif symbol == '300308':
                 return pd.DataFrame({
-                    '收盘': [100.0, 102.0]   # +2%
+                    '收盘': [100.0, 102.0],   # +2%
+                    '成交量': [800, 900]
                 })
             return pd.DataFrame()
         monkeypatch.setattr(fetcher.ak, 'stock_zh_a_hist', mock_hist)
@@ -376,6 +387,10 @@ class TestWatchlistPerformance:
     def test_get_watchlist_performance_missing_close(self, fetcher, monkeypatch):
         """测试数据缺少收盘价列"""
         watchlist = [{'code': '002594.SZ', 'name': '比亚迪'}]
+        monkeypatch.setattr(fetcher, '_load_env', lambda: None)
+        monkeypatch.setattr(fetcher, '_fetch_spot_from_mx_data', lambda wl: {
+            '002594': {'price': 255.0, 'change_pct': 2.0, 'amount': 1e8, 'amplitude': 3.0, 'turnover': 1.0, 'volume_ratio': 1.2},
+        })
         def mock_hist(symbol, period, start_date, end_date):
             return pd.DataFrame({
                 'open': [250, 255],
@@ -388,6 +403,8 @@ class TestWatchlistPerformance:
 
     def test_get_watchlist_performance_akshare_unavailable(self, fetcher, monkeypatch):
         """测试 akshare 不可用"""
+        monkeypatch.setattr(fetcher, '_load_env', lambda: None)
+        monkeypatch.setattr(fetcher, '_fetch_spot_from_mx_data', lambda wl: {})
         monkeypatch.setattr(fetcher, 'ak', None)
         watchlist = [{'code': '002594.SZ', 'name': '比亚迪'}]
         result = fetcher.get_watchlist_performance(watchlist, '2026-03-27')

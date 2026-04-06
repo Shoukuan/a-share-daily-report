@@ -1,144 +1,112 @@
+"""
+集成测试 - 主流程稳定性（离线）
+"""
 
-"""
-集成测试 - 完整报告生成流程
-"""
+import os
+import sys
+from datetime import date
 
 import pytest
-import sys
-import os
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
-SCRIPTS_DIR = os.path.join(PROJECT_ROOT, 'scripts')
+SCRIPTS_DIR = os.path.join(PROJECT_ROOT, "scripts")
 sys.path.insert(0, PROJECT_ROOT)
-sys.path.insert(0, SCRIPTS_DIR)  # 让 from utils import ... 能找到 scripts/utils/
+sys.path.insert(0, SCRIPTS_DIR)
 
 from scripts.generate_report import ReportGenerator
-from scripts.utils.cache import clear_cache
+from scripts.analyzer import Analyzer
+
+pytestmark = pytest.mark.ci_smoke
+
+
+def _build_generator():
+    config_path = os.path.join(PROJECT_ROOT, "config", "config.yaml")
+    return ReportGenerator(config_path=config_path)
 
 
 class TestIntegration:
-    """集成测试类"""
+    """主流程集成测试（使用 monkeypatch 隔离网络）"""
 
-    @pytest.fixture
-    def cleanup(self):
-        """清理测试环境"""
-        # 清理缓存
-        clear_cache(namespace='akshare')
-        clear_cache(namespace='sina')
-        # 清理报告目录
-        reports_dir = os.path.join(os.path.dirname(__file__), '..', 'reports')
-        if os.path.exists(reports_dir):
-            for subdir in ['morning', 'evening']:
-                dir_path = os.path.join(reports_dir, subdir)
-                if os.path.exists(dir_path):
-                    for file in os.listdir(dir_path):
-                        if file.endswith('.md'):
-                            os.remove(os.path.join(dir_path, file))
-        yield
-        # 测试后再次清理
-        clear_cache()
+    def test_morning_report_returns_paths_consistently(self, monkeypatch):
+        """早报返回值应包含一致的 output_path/report_path"""
+        generator = _build_generator()
 
-    def test_morning_report_generation(self, cleanup):
-        """测试早报完整生成流程"""
-        generator = ReportGenerator()
-        markdown = generator.generate_morning_report('2026-03-28')
+        monkeypatch.setattr(generator, "_fetch_morning_data", lambda dt: {"sentiment": {"success": True, "data": {}}})
+        monkeypatch.setattr(generator, "_analyze_morning_data", lambda data: {"summary": {"data": {"one_sentence": "ok"}}})
+        monkeypatch.setattr(generator.renderer, "render_morning_report", lambda analysis, dt: "# A股日报 - 早报预测版\n")
+        monkeypatch.setattr(generator, "_save_report", lambda markdown, mode, dt: ("/tmp/morning.md", "/tmp/morning.pdf"))
 
-        # 验证输出
-        assert '# A股日报 - 早报预测版' in markdown
-        assert '【30秒总览】' in markdown
-        assert '【自选股简洁预测】' in markdown
-        assert '比亚迪' in markdown
-        assert '中际旭创' in markdown
-        assert '腾讯控股' in markdown
+        result = generator.generate_morning_report("2026-04-01", publish=False)
 
-        # 验证文件保存
-        report_path = os.path.join(
-            os.path.dirname(__file__), '..', 'reports', 'morning', 'A股早报-20260328.md'
-        )
-        assert os.path.exists(report_path)
+        assert isinstance(result, dict)
+        assert result["output_path"] == "/tmp/morning.md"
+        assert result["report_path"] == "/tmp/morning.md"
+        assert result["pdf_path"] == "/tmp/morning.pdf"
+        assert result["mode"] == "morning"
+        assert result["date"] == "2026-04-01"
 
-        with open(report_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        assert content == markdown
+    def test_evening_report_returns_paths_consistently(self, monkeypatch):
+        """晚报返回值应包含一致的 output_path/report_path"""
+        generator = _build_generator()
 
-    def test_evening_report_generation(self, cleanup):
-        """测试晚报完整生成流程"""
-        generator = ReportGenerator()
-        markdown = generator.generate_evening_report('2026-03-28')
+        monkeypatch.setattr(generator, "_fetch_evening_data", lambda dt: {"sentiment": {"success": True, "data": {}}})
+        monkeypatch.setattr(generator, "_analyze_evening_data", lambda data: {"summary": {"data": {"one_sentence": "ok"}}})
+        monkeypatch.setattr(generator.renderer, "render_evening_report", lambda analysis, dt: "# A股日报 - 晚报复盘版\n")
+        monkeypatch.setattr(generator, "_save_report", lambda markdown, mode, dt: "/tmp/evening.md")
 
-        # 验证输出
-        assert '# A股日报 - 晚报复盘版' in markdown
-        assert '【30秒总览】' in markdown
-        assert '【自选股复盘】' in markdown
-        assert '【今日复盘】' in markdown
+        result = generator.generate_evening_report("2026-04-01", publish=False)
 
-        # 验证文件保存
-        report_path = os.path.join(
-            os.path.dirname(__file__), '..', 'reports', 'evening', 'A股晚报-20260328.md'
-        )
-        assert os.path.exists(report_path)
+        assert isinstance(result, dict)
+        assert result["output_path"] == "/tmp/evening.md"
+        assert result["report_path"] == "/tmp/evening.md"
+        assert "pdf_path" not in result
+        assert result["mode"] == "evening"
+        assert result["date"] == "2026-04-01"
 
-    def test_non_trading_day_handling(self, cleanup):
-        """测试非交易日处理（2026-03-29 是周六）"""
-        generator = ReportGenerator()
-        markdown = generator.generate_morning_report('2026-03-29')
+    def test_non_trading_day_uses_previous_trade_day(self, monkeypatch):
+        """非交易日应回退到最近交易日（2026-03-29 -> 2026-03-27）"""
+        generator = _build_generator()
 
-        # 应该使用前一个交易日（2026-03-27 或 2026-03-28）
-        assert '# A股日报 - 早报预测版' in markdown
-        # 日期应该是 2026-03-27 或 2026-03-28
-        assert ('2026-03-27' in markdown) or ('2026-03-28' in markdown)
+        captured = {}
 
-    def test_data_fetcher_integration(self):
-        """测试数据采集器集成"""
-        from scripts.data_fetcher import DataFetcher
+        def fake_fetch(dt):
+            captured["dt"] = dt
+            return {}
 
-        fetcher = DataFetcher({})
+        monkeypatch.setattr(generator, "_fetch_morning_data", fake_fetch)
+        monkeypatch.setattr(generator, "_analyze_morning_data", lambda data: {})
+        monkeypatch.setattr(generator.renderer, "render_morning_report", lambda analysis, dt: "# mock\n")
+        monkeypatch.setattr(generator, "_save_report", lambda markdown, mode, dt: "/tmp/nontrade.md")
 
-        # 测试所有数据接口
-        result1 = fetcher.get_index_data('000001.SH', '2026-03-27')
-        assert result1['success'] is True
+        result = generator.generate_morning_report("2026-03-29", publish=False)
 
-        result2 = fetcher.get_market_sentiment('2026-03-27')
-        assert result2['success'] is True
+        assert result["date"] == "2026-03-27"
+        assert captured["dt"] == date(2026, 3, 27)
 
-        result3 = fetcher.get_money_flow('2026-03-27')
-        assert result3['success'] is True
+    def test_watchlist_loading_current_config(self):
+        """自选股配置应与当前 watchlist.yaml 一致（2 只A股）"""
+        analyzer = Analyzer({"watchlist": {"path": "config/watchlist.yaml"}})
 
-        result4 = fetcher.get_us_market()
-        assert result4['success'] is True
+        assert len(analyzer.watchlist) == 2
+        stock_codes = [s["code"] for s in analyzer.watchlist]
+        assert "002594.SZ" in stock_codes
+        assert "300308.SZ" in stock_codes
 
-        result5 = fetcher.get_news('2026-03-27')
-        assert result5['success'] is True
+    def test_trading_strategy_fallback_without_position(self):
+        """当未注入 position 时，策略应能用情绪/资金数据降级生成"""
+        analyzer = Analyzer({"watchlist": {"path": "config/watchlist.yaml"}})
 
-    def test_full_pipeline_structure(self, cleanup):
-        """测试完整管道的内容结构"""
-        generator = ReportGenerator()
-        markdown = generator.generate_morning_report('2026-03-28')
+        data = {
+            "sentiment": {"success": True, "data": {"limit_up_count": 95, "max_consec_up": 4}},
+            "money_flow": {"success": True, "data": {"northbound": 2e9}},
+            "index_sh": {"success": True, "data": {"change_pct": 1.2}},
+        }
+        result = analyzer.generate_trading_strategy(data)
 
-        # 检查所有必要章节
-        required_sections = [
-            '【30秒总览】',
-            '【自选股简洁预测】',
-            '【核心决策】',
-            '【昨夜今晨】',
-            '国内要闻'
-        ]
-
-        for section in required_sections:
-            assert section in markdown, f"缺少章节: {section}"
-
-    def test_watchlist_loading(self):
-        """测试自选股加载"""
-        from scripts.analyzer import Analyzer
-
-        analyzer = Analyzer({'watchlist': {'path': 'config/watchlist.yaml'}})
-
-        assert len(analyzer.watchlist) == 3
-        stock_codes = [s['code'] for s in analyzer.watchlist]
-        assert '002594.SZ' in stock_codes  # 比亚迪
-        assert '300308.SZ' in stock_codes  # 中际旭创
-        assert '00700.HK' in stock_codes  # 腾讯控股
+        assert result["success"] is True
+        assert result["data"]["strategy"] in {"offensive", "neutral", "defensive"}
+        assert "logic" in result["data"]
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

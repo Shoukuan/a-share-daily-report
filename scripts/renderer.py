@@ -5,6 +5,9 @@
 """
 
 from datetime import datetime
+import math
+
+from constants import INDEX_DISPLAY_ORDER, ALL_INDICES
 
 from utils import get_logger, format_date, format_percent
 
@@ -138,20 +141,13 @@ class Renderer:
 | 指数 | 涨跌幅 | 状态 |
 |------|--------|------|
 """
-        desired_order = [
-            ("000001.SH", "上证指数"),
-            ("399001.SZ", "深证成指"),
-            ("399006.SZ", "创业板指"),
-            ("000688.SH", "科创50"),
-            ("000300.SH", "沪深300"),
-        ]
         if major_indices:
-            for code, label in desired_order:
+            for code, label in ALL_INDICES:
                 if code in major_indices:
                     idx = major_indices[code]
                     pct = idx.get('change_pct', 0)
-                    import math as _math
-                    if pct is None or (isinstance(pct, float) and _math.isnan(pct)):
+                    
+                    if pct is None or (isinstance(pct, float) and math.isnan(pct)):
                         pct_str = "暂无"
                         status = "—"
                     else:
@@ -161,7 +157,7 @@ class Renderer:
                 else:
                     markdown += f"| {label} | 暂缺 | — |\n"
         else:
-            for _, label in desired_order:
+            for _, label in INDEX_DISPLAY_ORDER:
                 markdown += f"| {label} | 暂无数据 | — |\n"
 
         markdown += """
@@ -216,8 +212,8 @@ class Renderer:
             a50 = futures_data.get('A50', {})
             if a50:
                 pct = a50.get('change_pct', 0)
-                import math as _math
-                if pct is None or (isinstance(pct, float) and _math.isnan(pct)):
+                
+                if pct is None or (isinstance(pct, float) and math.isnan(pct)):
                     pct_str = "暂无"
                 else:
                     pct_str = f"{pct:+.2f}%"
@@ -230,7 +226,7 @@ class Renderer:
             csi300 = futures_data.get('CSI300', {})
             if csi300:
                 pct = csi300.get('change_pct', 0)
-                if pct is None or (isinstance(pct, float) and _math.isnan(pct)):
+                if pct is None or (isinstance(pct, float) and math.isnan(pct)):
                     pct_str = "暂无"
                 else:
                     pct_str = f"{pct:+.2f}%"
@@ -453,20 +449,7 @@ class Renderer:
         # 显示10个主要指数
         major_indices = analysis_result.get('major_indices', {}).get('data', {})
         if major_indices:
-            # 按代码排序保证顺序
-            desired_order = [
-                ("000001.SH", "上证指数"),
-                ("399001.SZ", "深证成指"),
-                ("399006.SZ", "创业板指"),
-                ("000688.SH", "科创50"),
-                ("899050.BJ", "北证50"),
-                ("000016.SH", "上证50"),
-                ("000300.SH", "沪深300"),
-                ("000905.SH", "中证500"),
-                ("399673.SZ", "创业板50"),
-                ("000906.SH", "中证800")
-            ]
-            for code, label in desired_order:
+            for code, label in ALL_INDICES:
                 if code in major_indices:
                     idx = major_indices[code]
                     change_pct = idx.get('change_pct', 0)
@@ -765,7 +748,7 @@ class Renderer:
 |------|---------|--------|--------|------|------|------|------|-----------|
 """
         if major_indices:
-            for code, label in desired_order:
+            for code, label in ALL_INDICES:
                 if code in major_indices:
                     idx = major_indices[code]
                     close = idx.get('close', 0)

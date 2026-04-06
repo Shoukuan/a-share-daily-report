@@ -6,6 +6,7 @@
 
 import os
 import logging
+from typing import Any
 from logging.handlers import RotatingFileHandler
 
 # 日志根目录
@@ -16,6 +17,16 @@ LOG_ROOT = os.path.join(
 
 # 全局logger缓存
 _loggers = {}
+
+
+def log_event(logger: logging.Logger, level: str, event: str, **fields: Any) -> None:
+    """Emit a lightweight structured log line."""
+    parts = [f"event={event}"]
+    for key, value in fields.items():
+        parts.append(f"{key}={value}")
+    message = " ".join(parts)
+    log_fn = getattr(logger, level.lower(), logger.info)
+    log_fn(message)
 
 
 def get_logger(
@@ -41,6 +52,12 @@ def get_logger(
     # 如果logger已存在，直接返回
     if name in _loggers:
         return _loggers[name]
+
+    env_level = os.getenv('A_SHARE_LOG_LEVEL', '').strip().upper()
+    if env_level:
+        level = getattr(logging, env_level, level)
+    elif isinstance(level, str):
+        level = getattr(logging, level.upper(), logging.INFO)
 
     # 确保日志目录存在
     os.makedirs(LOG_ROOT, exist_ok=True)
@@ -86,4 +103,3 @@ def get_logger(
     _loggers[name] = logger
 
     return logger
-

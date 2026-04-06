@@ -1,0 +1,163 @@
+# A股日报 - 早报预测版
+**版本**: v1.0 | **生成时间**: {{ gen_time }} | **交易日**: {{ date_str }}
+
+---
+
+## 📊 30秒速览
+
+> **{{ one_sentence }}**
+
+### 🎯 核心机会
+{% for opp in core_opportunities %}
+- {{ opp }}
+{% endfor %}
+
+### ⚠️ 风险提示
+{% for risk in risk_warnings %}
+- {{ risk.emoji }} {{ risk.content }}
+{% endfor %}
+
+---
+
+## 📈 自选股预测
+
+| 股票 | 预判 | 核心逻辑 |
+|------|------|----------|
+{% if watchlist %}
+{% for item in watchlist %}
+| {{ item.name }} | {{ item.view }} | {{ item.reason }} |
+{% endfor %}
+{% else %}
+| 暂无数据 | - | - |
+{% endif %}
+
+---
+
+## 🚀 核心决策
+
+### 📊 今日策略
+**{{ strategy_name }}** - {{ strategy_logic }}
+
+### 🔍 重点关注
+| 股票 | 关注逻辑 | 介入区间 | 止损参考 |
+|------|----------|----------|----------|
+{% if focus_stocks %}
+{% for s in focus_stocks %}
+| {{ s.name }}({{ s.code[-2:] if s.code else '' }}) | {{ s.focus_logic }} | {{ s.entry_range }} | {{ s.stop_loss }} |
+{% endfor %}
+{% else %}
+| 暂无 | - | - | - |
+{% endif %}
+
+### 💰 仓位建议
+| 建议区间 | 配置逻辑 | 风险等级 |
+|----------|----------|----------|
+| {{ position_range }} | {{ position_logic }} | {{ position_risk }} |
+
+---
+
+## 📈 A股主要指数
+
+| 指数 | 涨跌幅 | 状态 |
+|------|--------|------|
+{% for row in major_indices %}
+| {{ row.label }} | {{ row.pct_str }} | {{ row.status }} |
+{% endfor %}
+
+---
+
+## 🌍 昨夜今晨
+
+### 📈 美股指数
+| 指数 | 涨跌幅 | 影响解读 |
+|------|--------|----------|
+{% if us_indices %}
+{% for row in us_indices %}
+| {{ row.label }} | {{ row.pct_str }} | {{ row.impact }} |
+{% endfor %}
+{% else %}
+| 暂无数据 | - | - |
+{% endif %}
+
+### 🇨🇳 中概股/港股
+| 股票 | 涨跌幅 | 传导逻辑 |
+|------|--------|----------|
+{% if chinadotcom %}
+{% for row in chinadotcom %}
+| {{ row.label }} | {{ row.pct_str }} | {{ row.impact }} |
+{% endfor %}
+{% else %}
+| 暂无数据 | - | - |
+{% endif %}
+
+### 📉 期指表现
+| 品种 | 涨跌幅 | 夜盘指引 |
+|------|--------|----------|
+{% for row in futures %}
+| {{ row.name }} | {{ row.pct_str }} | {{ row.impact }} |
+{% endfor %}
+
+---
+
+## 🌍 昨夜今晨 · 国际事件
+
+> **关注可能影响 A股开盘的外部因素**
+
+{% if events %}
+{% for e in events %}
+{{ e.icon }} **{{ e.title }}**（{{ e.category }}）{% if e.sector_tag %} | 关联板块: {{ e.sector_tag }}{% endif %}
+{% if e.impact_text %}   → {{ e.impact_text }}{% endif %}
+{% if e.source %}   - 来源: {{ e.source }}{% endif %}
+
+{% endfor %}
+{% else %}
+昨夜今晨暂无重大国际事件
+{% endif %}
+
+---
+
+## 📰 国内要闻
+
+### 🔥 重大影响（核心）
+{% if high_news %}
+{% for n in high_news %}
+{{ loop.index }}. **{{ n.level_icon }} {{ n.title }}**
+{% if n.url %}   - {{ n.url }}{% endif %}
+{% if n.source %}   - 来源: {{ n.source }}{% endif %}
+{% if n.summary %}   - 核心: {{ n.summary }}{% endif %}
+
+{% endfor %}
+{% else %}
+暂无新闻数据
+{% endif %}
+
+{% if medium_news %}
+### ⚡ 中等影响（关注）
+{% for n in medium_news %}
+{{ loop.index }}. **{{ n.level_icon }} {{ n.title }}**
+{% if n.url %}   {{ n.url }}{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if low_news %}
+### ℹ️ 一般信息
+{% for n in low_news %}
+{{ loop.index }}. **{{ n.level_icon }} {{ n.title }}**
+{% if n.url %}   {{ n.url }}{% endif %}
+{% endfor %}
+{% endif %}
+
+---
+
+## 📊 数据质量报告
+
+**信息完整性**:
+- ✅ 指数数据
+- ✅ 市场情绪
+- ✅ 资金流向
+- ✅ 美股/中概股
+- ✅ 财经新闻
+
+---
+**数据来源**: 东方财富、同花顺、Wind、财联社、妙想资讯  
+**风险提示**: 本报告仅供参考，据此操作风险自负

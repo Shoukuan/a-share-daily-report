@@ -109,3 +109,91 @@ class FetchResult:
     error: str = ""
     source: str = ""
     cached: bool = False
+
+
+@dataclass
+class RenderRiskWarning:
+    emoji: str
+    content: str
+
+
+@dataclass
+class RenderWatchlistItem:
+    name: str
+    view: str
+    reason: str
+
+
+@dataclass
+class RenderFocusStock:
+    name: str
+    code: str
+    focus_logic: str
+    entry_range: str
+    stop_loss: str
+
+
+@dataclass
+class RenderIndexLine:
+    label: str
+    pct_str: str
+    status: str
+
+
+@dataclass
+class RenderUSLine:
+    label: str
+    pct_str: str
+    impact: str
+
+
+@dataclass
+class RenderFuturesLine:
+    name: str
+    pct_str: str
+    impact: str
+
+
+@dataclass
+class RenderEventLine:
+    icon: str
+    title: str
+    category: str
+    sector_tag: str = ""
+    impact_text: str = ""
+    source: str = ""
+
+
+@dataclass
+class RenderNewsLine:
+    title: str
+    level_icon: str
+    url: str = ""
+    source: str = ""
+    summary: str = ""
+
+
+@dataclass
+class RenderMarketOverviewRow:
+    label: str
+    value: str
+    note: str
+
+
+@dataclass
+class RenderWatchlistEveningRow:
+    name: str
+    change_pct: str
+    avg_score: str
+    signal: str
+    reason: str
+
+
+@dataclass
+class RenderLHBRow:
+    rank: int
+    name: str
+    code: str
+    change_pct: str
+    close: str
+    net_inflow: str

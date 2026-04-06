@@ -128,15 +128,35 @@ skills/a-share-daily-report/
 ├── scripts/              # 脚本目录
 │   ├── __init__.py
 │   ├── generate_report.py     # 主入口脚本
-│   ├── data_fetcher.py        # 数据采集模块
+│   ├── data_fetcher.py        # 数据采集统一入口（组合各 fetcher）
+│   ├── data_collectors.py     # 早/晚报采集器（BaseDataCollector 复用）
+│   ├── fetchers/              # 分源采集子模块
+│   │   ├── index_fetcher.py
+│   │   ├── sentiment_fetcher.py
+│   │   ├── money_fetcher.py
+│   │   ├── international_fetcher.py
+│   │   ├── news_fetcher.py
+│   │   └── sector_fetcher.py
+│   ├── providers/             # provider 适配层（mx 等）
 │   ├── analyzer.py            # 分析模块
-│   ├── renderer.py            # 报告生成模块
+│   ├── renderer.py            # 渲染统一入口
+│   ├── morning_renderer.py    # 早报渲染
+│   ├── evening_renderer.py    # 晚报渲染
+│   ├── template_engine.py     # Jinja2 模板引擎
+│   ├── templates/             # 模板目录（.j2）
 │   ├── publisher.py           # 发布模块（飞书/PDF）
+│   ├── pdf_converter.py       # PDF 策略接口与实现
+│   ├── models.py              # dataclass 统一模型
+│   ├── errors.py              # 自定义异常
+│   ├── config_validator.py    # 启动配置校验
 │   ├── trade_calendar.py      # 交易日历（复用akshare技能）
 │   └── utils/                 # 工具函数
 │       ├── __init__.py
 │       ├── cache.py           # 缓存工具
-│       ├── logger.py          # 日志工具
+│       ├── logger.py          # 日志工具（文本/JSON + 脱敏 + trace）
+│       ├── observability.py   # 耗时监控（Prometheus/StatsD）
+│       ├── trace.py           # trace_id 上下文传播
+│       ├── network.py         # 网络重试与超时（支持上下文透传）
 │       └── helpers.py         # 辅助函数
 ├── cache/                # 数据缓存目录（gitignore）
 │   ├── akshare/
@@ -150,10 +170,42 @@ skills/a-share-daily-report/
 └── tests/                # 测试目录
     ├── __init__.py
     ├── test_data_fetcher.py
+    ├── test_data_fetcher_additional.py
     ├── test_analyzer.py
     ├── test_renderer.py
-    └── test_integration.py
+    ├── test_integration.py
+    ├── test_publisher.py
+    └── test_observability.py
 ```
+
+---
+
+## 🔭 可观测性与链路追踪（新增）
+
+### 1. 结构化日志（JSON）
+- `utils/logger.py` 支持 `A_SHARE_LOG_JSON=1` 输出 JSON 日志，便于 ELK 收集。
+- 自动附带 `trace_id`、`event`、`fields`。
+- 自动脱敏：`api_key/token/secret/authorization/password` 等敏感字段。
+
+### 2. 性能监控
+- `utils/observability.py` 提供：
+  - `monitor_stage` 装饰器
+  - `stage_timer` 上下文计时器
+- 指标输出：
+  - Prometheus：`a_share_stage_duration_seconds{stage,status}`
+  - StatsD：`${STATSD_PREFIX}.${stage}:<ms>|ms`
+- 生成流程已覆盖 `fetch/analyze/render/save/publish/total` 关键阶段。
+
+### 3. trace_id 上下文传播
+- `utils/trace.py` 基于 `ContextVar` 管理链路 `trace_id`。
+- `utils/network.run_with_timeout` 使用 `copy_context()`，确保超时线程内 trace 不丢失。
+- 发布、生成主流程、阶段日志统一复用同一 trace_id。
+
+### 4. OpenClaw MCP 真调用
+- `publisher.py` 在 OpenClaw 环境优先加载并调用：
+  - `openclaw.tools.feishu_create_doc`
+  - `openclaw.tools.feishu_im_user_message`
+- 支持多种返回结构解析（`token/doc_id/url/message_id`）。
 
 ---
 
@@ -563,4 +615,3 @@ python-dateutil&gt;=2.8.0
 ---
 
 *本文档定义了软件架构，详细接口设计请参考 INTERFACE.md*
-

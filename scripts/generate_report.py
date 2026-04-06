@@ -15,7 +15,17 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
 
 from constants import TIMEOUTS
-from utils import get_logger, log_event, format_date, run_with_timeout, get_project_root
+from utils import (
+    get_logger,
+    log_event,
+    format_date,
+    run_with_timeout,
+    get_project_root,
+    ensure_trace_id,
+    get_trace_id,
+    stage_timer,
+    monitor_stage,
+)
 from data_fetcher import DataFetcher
 from analyzer import Analyzer
 from renderer import Renderer
@@ -24,6 +34,7 @@ from publisher import Publisher
 from data_collectors import MorningDataCollector, EveningDataCollector
 from config_validator import validate_config
 from errors import DataFetchError, AnalysisError, RenderError
+from pdf_converter import get_pdf_converter
 
 logger = get_logger('report_generator')
 
@@ -64,6 +75,7 @@ class ReportGenerator:
             logger.warning(f"加载配置文件失败，使用默认配置: {e}")
             return {}
 
+    @monitor_stage("report.generate.morning.total")
     def generate_morning_report(self, dt=None, publish=False):
         """
         生成早报（总超时 180s）
@@ -76,6 +88,7 @@ class ReportGenerator:
             包含 markdown 和发布信息的字典
         """
         total_timeout = TIMEOUTS['report_generate_total_sec']
+        trace_id = ensure_trace_id()
         log_event(logger, "info", "report_generate_start", mode="morning", timeout_sec=total_timeout)
         effective_dt = get_effective_date(dt, mode='morning')
         date_str = format_date(effective_dt)
@@ -85,22 +98,26 @@ class ReportGenerator:
         try:
             def _do_generate():
                 logger.info("步骤1: 采集数据...")
-                try:
-                    data = self._fetch_morning_data(effective_dt)
-                except Exception as e:
-                    raise DataFetchError(str(e)) from e
+                with stage_timer("report.morning.fetch"):
+                    try:
+                        data = self._fetch_morning_data(effective_dt)
+                    except Exception as e:
+                        raise DataFetchError(str(e)) from e
                 logger.info("步骤2: 分析数据...")
-                try:
-                    analysis_result = self._analyze_morning_data(data)
-                except Exception as e:
-                    raise AnalysisError(str(e)) from e
+                with stage_timer("report.morning.analyze"):
+                    try:
+                        analysis_result = self._analyze_morning_data(data)
+                    except Exception as e:
+                        raise AnalysisError(str(e)) from e
                 logger.info("步骤3: 渲染报告...")
-                try:
-                    markdown = self.renderer.render_morning_report(analysis_result, effective_dt)
-                except Exception as e:
-                    raise RenderError(str(e)) from e
+                with stage_timer("report.morning.render"):
+                    try:
+                        markdown = self.renderer.render_morning_report(analysis_result, effective_dt)
+                    except Exception as e:
+                        raise RenderError(str(e)) from e
                 logger.info("步骤4: 保存报告...")
-                save_result = self._save_report(markdown, 'morning', effective_dt)
+                with stage_timer("report.morning.save"):
+                    save_result = self._save_report(markdown, 'morning', effective_dt)
                 if isinstance(save_result, tuple):
                     output_path, pdf_path = save_result
                 else:
@@ -123,21 +140,31 @@ class ReportGenerator:
             'output_path': output_path,
             'report_path': output_path,
             'date': date_str,
-            'mode': 'morning'
+            'mode': 'morning',
+            'trace_id': trace_id,
         }
         if pdf_path:
             result['pdf_path'] = pdf_path
 
         if publish:
             log_event(logger, "info", "report_publish_start", mode="morning")
-            publish_result = self.publisher.publish_morning_report(
-                markdown, effective_dt, send_notification=True
-            )
+            with stage_timer("report.morning.publish"):
+                publish_result = self.publisher.publish_morning_report(
+                    markdown, effective_dt, send_notification=True
+                )
             result['publish'] = publish_result
 
-        log_event(logger, "info", "report_generate_done", mode="morning", output_path=output_path)
+        log_event(
+            logger,
+            "info",
+            "report_generate_done",
+            mode="morning",
+            output_path=output_path,
+            trace_id=get_trace_id(),
+        )
         return result
 
+    @monitor_stage("report.generate.evening.total")
     def generate_evening_report(self, dt=None, publish=False):
         """
         生成晚报（总超时 180s）
@@ -150,6 +177,7 @@ class ReportGenerator:
             包含 markdown 和发布信息的字典
         """
         total_timeout = TIMEOUTS['report_generate_total_sec']
+        trace_id = ensure_trace_id()
         log_event(logger, "info", "report_generate_start", mode="evening", timeout_sec=total_timeout)
         effective_dt = get_effective_date(dt, mode='evening')
         date_str = format_date(effective_dt)
@@ -159,22 +187,26 @@ class ReportGenerator:
         try:
             def _do_generate():
                 logger.info("步骤1: 采集数据...")
-                try:
-                    data = self._fetch_evening_data(effective_dt)
-                except Exception as e:
-                    raise DataFetchError(str(e)) from e
+                with stage_timer("report.evening.fetch"):
+                    try:
+                        data = self._fetch_evening_data(effective_dt)
+                    except Exception as e:
+                        raise DataFetchError(str(e)) from e
                 logger.info("步骤2: 分析数据...")
-                try:
-                    analysis_result = self._analyze_evening_data(data)
-                except Exception as e:
-                    raise AnalysisError(str(e)) from e
+                with stage_timer("report.evening.analyze"):
+                    try:
+                        analysis_result = self._analyze_evening_data(data)
+                    except Exception as e:
+                        raise AnalysisError(str(e)) from e
                 logger.info("步骤3: 渲染报告...")
-                try:
-                    markdown = self.renderer.render_evening_report(analysis_result, effective_dt)
-                except Exception as e:
-                    raise RenderError(str(e)) from e
+                with stage_timer("report.evening.render"):
+                    try:
+                        markdown = self.renderer.render_evening_report(analysis_result, effective_dt)
+                    except Exception as e:
+                        raise RenderError(str(e)) from e
                 logger.info("步骤4: 保存报告...")
-                save_result = self._save_report(markdown, 'evening', effective_dt)
+                with stage_timer("report.evening.save"):
+                    save_result = self._save_report(markdown, 'evening', effective_dt)
                 if isinstance(save_result, tuple):
                     output_path, pdf_path = save_result
                 else:
@@ -197,19 +229,28 @@ class ReportGenerator:
             'output_path': output_path,
             'report_path': output_path,
             'date': date_str,
-            'mode': 'evening'
+            'mode': 'evening',
+            'trace_id': trace_id,
         }
         if pdf_path:
             result['pdf_path'] = pdf_path
 
         if publish:
             log_event(logger, "info", "report_publish_start", mode="evening")
-            publish_result = self.publisher.publish_evening_report(
-                markdown, effective_dt, send_notification=True
-            )
+            with stage_timer("report.evening.publish"):
+                publish_result = self.publisher.publish_evening_report(
+                    markdown, effective_dt, send_notification=True
+                )
             result['publish'] = publish_result
 
-        log_event(logger, "info", "report_generate_done", mode="evening", output_path=output_path)
+        log_event(
+            logger,
+            "info",
+            "report_generate_done",
+            mode="evening",
+            output_path=output_path,
+            trace_id=get_trace_id(),
+        )
         return result
 
     def _fetch_morning_data(self, dt):
@@ -365,13 +406,8 @@ class ReportGenerator:
 
         title = f"A股{mode_name}-{date_str}"
 
-        # 按引擎选择转换方式
-        if engine == 'weasyprint':
-            result = self._pdf_via_weasyprint(markdown, pdf_path, title)
-        elif engine == 'wkhtmltopdf':
-            result = self._pdf_via_wkhtmltopdf(markdown, pdf_path, title)
-        else:
-            result = self._pdf_via_fpdf2(markdown, pdf_path, title)
+        converter = get_pdf_converter(engine=engine, publisher=self.publisher)
+        result = converter.convert(markdown, pdf_path, title)
 
         if result:
             logger.info(f"PDF 已导出: {result}")

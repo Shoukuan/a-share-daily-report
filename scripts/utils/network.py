@@ -5,6 +5,7 @@
 import json
 import time
 import urllib.request
+from contextvars import copy_context
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Iterable, Optional
 
@@ -13,8 +14,13 @@ import requests
 
 def run_with_timeout(func, seconds, *args, **kwargs):
     """在线程池中执行函数并附加超时。"""
+    ctx = copy_context()
+
+    def _runner():
+        return ctx.run(func, *args, **kwargs)
+
     with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(func, *args, **kwargs)
+        future = executor.submit(_runner)
         try:
             return future.result(timeout=seconds)
         except FuturesTimeoutError:

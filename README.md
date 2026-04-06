@@ -39,7 +39,7 @@ APIs...    新闻分级     分级展示
 ### 1. 安装依赖
 
 ```bash
-pip install akshare yfinance pyyaml pandas python-dotenv
+pip install akshare yfinance pyyaml pandas python-dotenv jinja2
 ```
 
 ### 2. 配置自选股
@@ -120,12 +120,27 @@ a-share-daily-report/
 │   └── watchlist.yaml           # 自选股列表
 ├── scripts/
 │   ├── generate_report.py       # 主入口
-│   ├── data_fetcher.py          # 数据采集模块（多源降级）
+│   ├── data_fetcher.py          # 数据采集统一入口（组合各 fetcher）
+│   ├── data_collectors.py       # 早/晚报采集器（基类复用）
+│   ├── fetchers/                # 分源采集模块
+│   │   ├── index_fetcher.py
+│   │   ├── sentiment_fetcher.py
+│   │   ├── money_fetcher.py
+│   │   ├── international_fetcher.py
+│   │   ├── news_fetcher.py
+│   │   └── sector_fetcher.py
+│   ├── providers/               # 外部 provider 解析（如 mx provider）
 │   ├── analyzer.py              # 分析引擎（策略/仓位/主题）
-│   ├── renderer.py              # Markdown 渲染（早报/晚报模板）
+│   ├── renderer.py              # 渲染统一入口
+│   ├── morning_renderer.py      # 早报渲染
+│   ├── evening_renderer.py      # 晚报渲染
+│   ├── template_engine.py       # Jinja2 模板引擎
+│   ├── templates/               # Jinja2 模板目录
 │   ├── publisher.py             # 飞书文档发布 + 消息通知
+│   ├── pdf_converter.py         # PDF 策略模式（fpdf2/weasyprint/wkhtmltopdf）
+│   ├── models.py                # dataclass 数据模型
 │   ├── trade_calendar.py        # 交易日历判
-│   └── utils/                   # 缓存/日志/工具
+│   └── utils/                   # 缓存/日志/观测/trace/工具
 ├── tests/                       # 单元测试 + 集成测试
 ├── reports/                     # 生成的报告（自动创建）
 └── README.md
@@ -145,6 +160,9 @@ python scripts/generate_report.py --mode morning --publish
 ```bash
 export FEISHU_NOTIFY_OPEN_ID=ou_xxxxxxxx
 ```
+在 OpenClaw 环境中，`publisher.py` 会优先通过 `openclaw.tools` 直接调用：
+- `feishu_create_doc`
+- `feishu_im_user_message`
 
 ### 定时任务（Cron）
 
@@ -162,6 +180,28 @@ export FEISHU_NOTIFY_OPEN_ID=ou_xxxxxxxx
 - 自定义报告输出路径
 - 飞书文档文件夹 Token
 - 缓存 TTL 控制
+
+### 可观测性（新增）
+
+支持结构化 JSON 日志、trace_id 透传、阶段耗时采集：
+
+```bash
+# 结构化日志（ELK 推荐）
+export A_SHARE_LOG_JSON=1
+
+# 日志级别
+export A_SHARE_LOG_LEVEL=INFO
+
+# StatsD（可选）
+export STATSD_HOST=127.0.0.1
+export STATSD_PORT=8125
+export STATSD_PREFIX=a_share_report
+```
+
+说明：
+- 日志自动脱敏 `api_key/token/authorization/password` 等字段。
+- `trace_id` 自动注入日志，并在超时线程执行中保持上下文。
+- 各阶段（fetch/analyze/render/save/publish）会记录耗时到日志，并可上报 Prometheus/StatsD。
 
 ---
 

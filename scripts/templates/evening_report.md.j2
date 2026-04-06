@@ -1,0 +1,124 @@
+# A股日报 - 晚报复盘版
+**版本**: v1.0 | **生成时间**: {{ gen_time }} | **交易日**: {{ date_str }}
+
+---
+
+## 🎯 市场全景
+
+| 指标 | 数值 | 说明 |
+|------|------|------|
+{% if market_overview_rows %}
+{% for row in market_overview_rows %}
+| {{ row.label }} | {{ row.value }} | {{ row.note }} |
+{% endfor %}
+{% else %}
+| 市场全景数据暂缺 | - | - |
+{% endif %}
+
+---
+
+## 📊 30秒速览
+
+> **{{ one_sentence }}**
+
+### ✨ 核心亮点
+{% for h in core_highlights %}
+- {{ h }}
+{% endfor %}
+
+### 🔮 明日重点观察
+{% for o in tomorrow_outlook %}
+- {{ o }}
+{% endfor %}
+
+---
+
+## 📈 今日复盘
+
+### 🎯 指数表现（主要市场指数）
+| 指数 | 涨跌幅 | 状态 |
+|------|--------|------|
+{% for row in major_indices %}
+| {{ row.label }} | {{ row.pct_str }} | {{ row.status }} |
+{% endfor %}
+
+---
+
+## 📈 自选股复盘（自选股深度分析）
+| 股票 | 涨跌幅 | 评分 | 信号 | 理由 |
+|------|--------|------|------|------|
+{% if watchlist_rows %}
+{% for r in watchlist_rows %}
+| {{ r.name }} | {{ r.change_pct }} | {{ r.avg_score }} | {{ r.signal }} | {{ r.reason }} |
+{% endfor %}
+{% else %}
+| 暂无数据 | - | - | - | - |
+{% endif %}
+
+---
+
+## 🏅 龙虎榜 Top 5
+
+| 排名 | 股票 | 代码 | 涨跌幅 | 收盘 | 净买额 |
+|------|------|------|--------|------|--------|
+{% if lhb_rows %}
+{% for r in lhb_rows %}
+| {{ r.rank }} | {{ r.name }} | {{ r.code }} | {{ r.change_pct }} | {{ r.close }} | {{ r.net_inflow }} |
+{% endfor %}
+{% else %}
+| - | 今日无龙虎榜数据 | - | - | - | - |
+{% endif %}
+
+---
+
+## 📰 今日要闻
+
+### 🔥 重点新闻（前10）
+{% if news_rows %}
+{% for n in news_rows %}
+{{ loop.index }}. **{{ n.level_icon }} {{ n.title }}**
+{% if n.url %}   {{ n.url }}{% endif %}
+{% if n.source %}   - 来源: {{ n.source }}{% endif %}
+{% if n.summary %}   - 概要: {{ n.summary }}{% endif %}
+
+{% endfor %}
+{% else %}
+暂无新闻数据
+{% endif %}
+
+---
+
+## 📊 综合分析
+
+### 🎯 大盘走势判断
+{{ trend_judge }}
+
+### 💰 量能分析
+{{ volume_analysis }}
+
+### 📈 风格分化
+{{ style_analysis }}
+
+### 💡 后市展望
+{{ outlook }}
+
+---
+
+## 📊 数据质量报告
+
+**信息完整性**:
+- ✅ 指数数据（10个主要指数）
+- ✅ 市场全景（情绪评分+仓位建议）
+- ✅ 盘面深度（炸板率统计）
+- ✅ 资金流向
+- ✅ 板块数据
+- ✅ 龙虎榜
+- ✅ 财经新闻
+{% if missing_items %}
+
+**⚠️ 缺失数据**: {{ missing_items|join(', ') }}
+{% endif %}
+
+---
+**数据来源**: 东方财富、同花顺、Wind、财联社、妙想资讯、yfinance  
+**风险提示**: 本报告仅供参考，据此操作风险自负

@@ -21,6 +21,9 @@ from analyzer import Analyzer
 from renderer import Renderer
 from trade_calendar import get_effective_date
 from publisher import Publisher
+from data_collectors import MorningDataCollector, EveningDataCollector
+from config_validator import validate_config
+from errors import DataFetchError, AnalysisError, RenderError
 
 logger = get_logger('report_generator')
 
@@ -43,10 +46,13 @@ class ReportGenerator:
             config_path = os.path.normpath(config_path)
 
         self.config = self._load_config(config_path)
+        validate_config(self.config)
         self.data_fetcher = DataFetcher(self.config)
         self.analyzer = Analyzer(self.config)
         self.renderer = Renderer(self.config)
         self.publisher = Publisher(self.config)
+        self.morning_collector = MorningDataCollector(self.data_fetcher, self.analyzer, logger)
+        self.evening_collector = EveningDataCollector(self.data_fetcher, self.analyzer, logger)
 
         log_event(logger, "info", "report_generator_init", config_path=config_path)
 
@@ -79,11 +85,20 @@ class ReportGenerator:
         try:
             def _do_generate():
                 logger.info("步骤1: 采集数据...")
-                data = self._fetch_morning_data(effective_dt)
+                try:
+                    data = self._fetch_morning_data(effective_dt)
+                except Exception as e:
+                    raise DataFetchError(str(e)) from e
                 logger.info("步骤2: 分析数据...")
-                analysis_result = self._analyze_morning_data(data)
+                try:
+                    analysis_result = self._analyze_morning_data(data)
+                except Exception as e:
+                    raise AnalysisError(str(e)) from e
                 logger.info("步骤3: 渲染报告...")
-                markdown = self.renderer.render_morning_report(analysis_result, effective_dt)
+                try:
+                    markdown = self.renderer.render_morning_report(analysis_result, effective_dt)
+                except Exception as e:
+                    raise RenderError(str(e)) from e
                 logger.info("步骤4: 保存报告...")
                 save_result = self._save_report(markdown, 'morning', effective_dt)
                 if isinstance(save_result, tuple):
@@ -95,6 +110,9 @@ class ReportGenerator:
             markdown, output_path, pdf_path = run_with_timeout(_do_generate, total_timeout)
         except TimeoutError as e:
             log_event(logger, "error", "report_generate_timeout", mode="morning", error=e)
+            raise
+        except (DataFetchError, AnalysisError, RenderError) as e:
+            log_event(logger, "error", "report_generate_stage_error", mode="morning", error=e)
             raise
         except Exception as e:
             log_event(logger, "error", "report_generate_error", mode="morning", error=e)
@@ -141,11 +159,20 @@ class ReportGenerator:
         try:
             def _do_generate():
                 logger.info("步骤1: 采集数据...")
-                data = self._fetch_evening_data(effective_dt)
+                try:
+                    data = self._fetch_evening_data(effective_dt)
+                except Exception as e:
+                    raise DataFetchError(str(e)) from e
                 logger.info("步骤2: 分析数据...")
-                analysis_result = self._analyze_evening_data(data)
+                try:
+                    analysis_result = self._analyze_evening_data(data)
+                except Exception as e:
+                    raise AnalysisError(str(e)) from e
                 logger.info("步骤3: 渲染报告...")
-                markdown = self.renderer.render_evening_report(analysis_result, effective_dt)
+                try:
+                    markdown = self.renderer.render_evening_report(analysis_result, effective_dt)
+                except Exception as e:
+                    raise RenderError(str(e)) from e
                 logger.info("步骤4: 保存报告...")
                 save_result = self._save_report(markdown, 'evening', effective_dt)
                 if isinstance(save_result, tuple):
@@ -157,6 +184,9 @@ class ReportGenerator:
             markdown, output_path, pdf_path = run_with_timeout(_do_generate, total_timeout)
         except TimeoutError as e:
             log_event(logger, "error", "report_generate_timeout", mode="evening", error=e)
+            raise
+        except (DataFetchError, AnalysisError, RenderError) as e:
+            log_event(logger, "error", "report_generate_stage_error", mode="evening", error=e)
             raise
         except Exception as e:
             log_event(logger, "error", "report_generate_error", mode="evening", error=e)
@@ -183,104 +213,10 @@ class ReportGenerator:
         return result
 
     def _fetch_morning_data(self, dt):
-        data = {}
-        logger.info("采集A股指数数据...")
-        index_sh = self.data_fetcher.get_index_data("000001.SH", dt)
-        index_sz = self.data_fetcher.get_index_data("399001.SZ", dt)
-        index_cyb = self.data_fetcher.get_index_data("399006.SZ", dt)
-        data['index_sh'] = index_sh
-        data['index_sz'] = index_sz
-        data['index_cyb'] = index_cyb
-        # 构建指数缓存供 sentiment 复用（避免重复查询三大指数）
-        index_cache = {
-            '000001.SH': index_sh,
-            '399001.SZ': index_sz,
-            '399006.SZ': index_cyb,
-        }
-        # 早报也需要 major_indices（供渲染器展示指数表格）
-        data['major_indices'] = self.data_fetcher.get_major_indices(dt)
-
-        logger.info("采集市场情绪数据...")
-        data['sentiment'] = self.data_fetcher.get_market_sentiment(dt, index_cache=index_cache)
-
-        logger.info("采集资金流向数据（北向/主力）...")
-        data['money_flow'] = self.data_fetcher.get_money_flow(dt)
-
-        logger.info("采集行业资金流向...")
-        data['industry_fund_flow'] = self.data_fetcher.get_industry_fund_flow(dt)
-
-        logger.info("采集美股数据...")
-        data['us_market'] = self.data_fetcher.get_us_market()
-
-        logger.info("采集期指数据...")
-        data['futures'] = self.data_fetcher.get_futures_data()
-
-        logger.info("采集国际事件数据...")
-        data['international_events'] = self.data_fetcher.get_international_events(dt)
-
-        logger.info("采集新闻数据...")
-        data['news'] = self.data_fetcher.get_news(dt, limit=10)
-
-        logger.info("获取自选股表现...")
-        watchlist = self.analyzer.watchlist
-        perf_result = self.data_fetcher.get_watchlist_performance(watchlist, dt)
-        data['watchlist_performance'] = perf_result.get('data', []) if perf_result.get('success') else []
-        logger.info(f"自选股行情获取完成: {len(data['watchlist_performance'])} 只")
-
-        return data
+        return self.morning_collector.collect(dt)
 
     def _fetch_evening_data(self, dt):
-        data = {}
-        logger.info("采集A股指数数据...")
-        index_sh = self.data_fetcher.get_index_data("000001.SH", dt)
-        index_sz = self.data_fetcher.get_index_data("399001.SZ", dt)
-        index_cyb = self.data_fetcher.get_index_data("399006.SZ", dt)
-        data['index_sh'] = index_sh
-        data['index_sz'] = index_sz
-        data['index_cyb'] = index_cyb
-        # 构建指数缓存供 sentiment 复用
-        index_cache = {
-            '000001.SH': index_sh,
-            '399001.SZ': index_sz,
-            '399006.SZ': index_cyb,
-        }
-
-        logger.info("采集市场全景数据...")
-        data['market_overview'] = self.data_fetcher.get_market_overview(dt)
-
-        logger.info("采集市场深度数据...")
-        data['market_depth'] = self.data_fetcher.get_market_depth(dt)
-
-        logger.info("采集主要指数数据...")
-        data['major_indices'] = self.data_fetcher.get_major_indices(dt)
-
-        logger.info("采集全球资产数据...")
-        data['global_assets'] = self.data_fetcher.get_global_assets()
-
-        logger.info("采集市场情绪数据...")
-        data['sentiment'] = self.data_fetcher.get_market_sentiment(dt, index_cache=index_cache)
-
-        logger.info("采集资金流向数据（北向/主力）...")
-        data['money_flow'] = self.data_fetcher.get_money_flow(dt)
-
-        logger.info("采集行业资金流向...")
-        data['industry_fund_flow'] = self.data_fetcher.get_industry_fund_flow(dt)
-
-        logger.info("采集板块数据...")
-        data['sectors'] = self.data_fetcher.get_sector_data(dt)
-
-        logger.info("采集龙虎榜数据...")
-        data['lhb'] = self.data_fetcher.get_lhb_data(dt)
-
-        logger.info("采集新闻数据...")
-        data['news'] = self.data_fetcher.get_news(dt, limit=10)
-
-        logger.info("获取自选股表现...")
-        watchlist = self.analyzer.watchlist
-        perf_result = self.data_fetcher.get_watchlist_performance(watchlist, dt)
-        data['watchlist_performance'] = perf_result.get('data', []) if perf_result.get('success') else []
-
-        return data
+        return self.evening_collector.collect(dt)
 
     def _analyze_morning_data(self, data):
         result = {}

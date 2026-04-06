@@ -99,6 +99,54 @@ class TestDataFetcher:
         assert len(result['data']) <= 5
         assert 'title' in result['data'][0]
 
+    def test_get_news_retry_with_backup_key(self, fetcher, monkeypatch):
+        """status=113 时应切换备用 key 并重试成功"""
+        clear_cache(namespace='mx_search')
+        monkeypatch.setattr(fetcher, '_load_env', lambda: None)
+        monkeypatch.setattr(
+            fetcher,
+            '_get_mx_apikey',
+            lambda: 'backup_key' if getattr(fetcher, '_mx_key_exhausted', False) else 'primary_key'
+        )
+
+        class _Resp:
+            status_code = 200
+
+            def __init__(self, payload):
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        def _post(url, json=None, headers=None, timeout=None):
+            apikey = (headers or {}).get('apikey')
+            if apikey == 'primary_key':
+                return _Resp({"status": 113, "message": "quota exceeded"})
+            return _Resp({
+                "status": 0,
+                "data": {
+                    "data": {
+                        "llmSearchResponse": {
+                            "data": [{
+                                "title": "测试新闻",
+                                "content": "测试内容",
+                                "date": "2026-04-06 09:00:00",
+                                "source": "mock",
+                                "jumpUrl": "https://example.com",
+                                "secuList": []
+                            }]
+                        }
+                    }
+                }
+            })
+
+        monkeypatch.setattr('requests.post', _post)
+        result = fetcher.get_news('2026-04-06', limit=5)
+        assert result['success'] is True
+        assert result['source'] == 'mx-search'
+        assert len(result['data']) == 1
+        assert result['data'][0]['title'] == '测试新闻'
+
     @pytest.mark.ci_smoke
     def test_convert_index_code(self, fetcher):
         """测试指数代码转换"""
@@ -266,6 +314,35 @@ class TestFuturesData:
         assert 'CSI300' in result['data']['futures']
         assert 'A50' in result['data']['futures']
         assert result['source'] == 'mx-data'
+
+    def test_mx_query_json_retry_on_status_113(self, fetcher, monkeypatch):
+        """统一 mx-query 在 113 时应切换备用 key 并成功返回"""
+        monkeypatch.setattr(fetcher, '_load_env', lambda: None)
+        monkeypatch.setattr(
+            fetcher,
+            '_get_mx_apikey',
+            lambda: 'backup_key' if getattr(fetcher, '_mx_key_exhausted', False) else 'primary_key'
+        )
+
+        class _Resp:
+            status_code = 200
+
+            def __init__(self, payload):
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        def _post(url, json=None, headers=None, timeout=None):
+            apikey = (headers or {}).get('apikey')
+            if apikey == 'primary_key':
+                return _Resp({"status": 113, "message": "quota exceeded"})
+            return _Resp({"status": 0, "data": {"ok": 1}})
+
+        monkeypatch.setattr('requests.post', _post)
+        raw = fetcher._mx_query_json("测试 query", 3)
+        assert raw['status'] == 0
+        assert raw['data']['ok'] == 1
 
     def test_get_futures_data_mx_csi300_only_triggers_yfinance(self, fetcher, monkeypatch):
         """测试 mx-data 只返回 CSI300，触发上证50替代补充 A50"""

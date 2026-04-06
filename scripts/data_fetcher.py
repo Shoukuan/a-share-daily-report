@@ -21,6 +21,7 @@ from international_event_rules import (
     get_affected_sectors as infer_affected_sectors,
     get_a_share_impact_sectors as infer_a_share_impact_sectors,
 )
+from providers import MXDataProvider
 from models import IndexData, NewsItem, FuturesItem
 from utils import (
     get_cache,
@@ -32,7 +33,6 @@ from utils import (
     safe_int,
     load_project_env,
     post_json_with_retry,
-    urlopen_json_with_retry,
 )
 
 logger = get_logger('data_fetcher')
@@ -49,6 +49,13 @@ class DataFetcher:
         self._load_env()
         self._init_akshare()
         self._init_tushare()
+        self.mx_provider = MXDataProvider(
+            logger=logger,
+            get_apikey=self._get_mx_apikey,
+            handle_status=self._handle_mx_status,
+            post_json_with_retry=post_json_with_retry,
+            retry_policy=RETRY_POLICY,
+        )
         mx_ready = bool(os.getenv('MX_APIKEY'))
         ts_ready = bool(os.getenv('TUSHARE_TOKEN'))
         log_event(
@@ -891,9 +898,9 @@ class DataFetcher:
                     api_status = result.get('status', 0)
                     # status=113 调用耗尽，切换备用 key 重试
                     if api_status == 113:
-                        self._handle_mx_status(api_status, result.get('message', ''))
+                        should_retry = self._handle_mx_status(api_status, result.get('message', ''))
                         retry_key = self._get_mx_apikey()
-                        if retry_key and retry_key != mx_api_key:
+                        if should_retry and retry_key and retry_key != mx_api_key:
                             logger.info("mx-search 使用备用key重试新闻获取")
                             resp = _do_news_request(retry_key)
                             if resp.status_code == 200:
@@ -983,13 +990,10 @@ class DataFetcher:
 
         # 优先级1：使用 mx-data Skill（需要 MX_APIKEY）
         self._load_env()  # 确保 .env 已加载
-        mx_apikey = os.getenv('MX_APIKEY')
+        mx_apikey = self._get_mx_apikey()
         logger.debug(f"MX_APIKEY状态: {'已设置' if mx_apikey else '未设置'}")
         if mx_apikey:
             try:
-                url = "https://mkapi2.dfcfs.com/finskillshub/api/claw/query"
-                headers = {"apikey": mx_apikey}
-
                 # 并行查询沪深300和A50（避免串行超时叠加）
                 queries = [
                     ("沪深300期货 最新价 涨跌幅", "CSI300"),
@@ -1001,18 +1005,8 @@ class DataFetcher:
                 def _fetch_one(query_key):
                     query, key = query_key
                     logger.debug(f"查询期指: {query}")
-                    payload = {"toolQuery": query}
-                    r = post_json_with_retry(
-                        url=url,
-                        payload=payload,
-                        headers=headers,
-                        timeout=TIMEOUTS['mx_futures_sec'],
-                        retries=RETRY_POLICY['http_retries'],
-                        backoff_seconds=RETRY_POLICY['http_backoff_seconds'],
-                    )
-                    if r.status_code == 200:
-                        return key, r.json()
-                    return key, None
+                    raw = self._mx_query_json(query, TIMEOUTS['mx_futures_sec'])
+                    return key, raw
 
                 with ThreadPoolExecutor(max_workers=2) as pool:
                     futures_map = {pool.submit(_fetch_one, q): q[1] for q in queries}
@@ -1048,38 +1042,28 @@ class DataFetcher:
         if not futures_data['futures'].get('A50') and mx_apikey:
             logger.info("A50期指未获取到，改用 mx-data 查上证50实时行情作为替代")
             try:
-                url2 = "https://mkapi2.dfcfs.com/finskillshub/api/claw/query"
-                resp2 = post_json_with_retry(
-                    url=url2,
-                    payload={"toolQuery": "上证50 最新价 涨跌幅"},
-                    headers={"apikey": mx_apikey},
-                    timeout=TIMEOUTS['mx_futures_a50_fallback_sec'],
-                    retries=RETRY_POLICY['http_retries'],
-                    backoff_seconds=RETRY_POLICY['http_backoff_seconds'],
-                )
-                if resp2.status_code == 200:
-                    d2 = resp2.json()
-                    tables2 = d2['data']['data']['searchDataResultDTO']['dataTableDTOList']
-                    for t2 in tables2:
-                        nm2 = t2.get('nameMap', {})
-                        td2 = t2.get('table', {})
-                        # 找涨跌幅字段
-                        for fid, fname in nm2.items():
-                            if fname == '涨跌幅':
-                                vals = td2.get(fid, [])
-                                if vals and vals[0] not in ['-', '', None]:
-                                    chg = float(str(vals[0]).strip().rstrip('%'))
-                                    futures_data['futures']['A50'] = asdict(FuturesItem(
-                                        name="上证50(A50替代)",
-                                        code="000016.SH",
-                                        change_pct=round(chg, 2),
-                                        impact=self._generate_impact_text(chg, "上证50"),
-                                    ))
-                                    sources.append('mx-data(A50替代)')
-                                    logger.info(f"✅ mx-data 上证50替代A50: {chg}%")
-                                    break
-                        if futures_data['futures'].get('A50'):
-                            break
+                d2 = self._mx_query_json("上证50 最新价 涨跌幅", TIMEOUTS['mx_futures_a50_fallback_sec'])
+                tables2 = d2['data']['data']['searchDataResultDTO']['dataTableDTOList']
+                for t2 in tables2:
+                    nm2 = t2.get('nameMap', {})
+                    td2 = t2.get('table', {})
+                    # 找涨跌幅字段
+                    for fid, fname in nm2.items():
+                        if fname == '涨跌幅':
+                            vals = td2.get(fid, [])
+                            if vals and vals[0] not in ['-', '', None]:
+                                chg = float(str(vals[0]).strip().rstrip('%'))
+                                futures_data['futures']['A50'] = asdict(FuturesItem(
+                                    name="上证50(A50替代)",
+                                    code="000016.SH",
+                                    change_pct=round(chg, 2),
+                                    impact=self._generate_impact_text(chg, "上证50"),
+                                ))
+                                sources.append('mx-data(A50替代)')
+                                logger.info(f"✅ mx-data 上证50替代A50: {chg}%")
+                                break
+                    if futures_data['futures'].get('A50'):
+                        break
             except Exception as e:
                 logger.warning(f"mx-data 上证50替代失败: {e}")
 
@@ -1142,10 +1126,12 @@ class DataFetcher:
         """
         处理 mx-data API 业务状态码。
         status=113: 调用次数耗尽，标记主 key 并切换备用 key。
-        非0状态: 抛出异常。
+        返回值:
+            True: 建议切换备用 key 重试（仅 status=113）
+            False: 不需要重试
         """
         if status == 0:
-            return
+            return False
         if status == 113:
             # 调用耗尽，切换备用 key
             if not getattr(self, '_mx_key_exhausted', False):
@@ -1155,7 +1141,16 @@ class DataFetcher:
                     logger.warning(f"mx-data 主key调用次数耗尽(status=113)，已切换到备用key")
                 else:
                     logger.warning(f"mx-data 主key调用次数耗尽(status=113)，备用key未配置")
+            return True
         raise RuntimeError(f"mx-data API error status={status}: {message}")
+
+    def _mx_query_json(self, tool_query, timeout_sec):
+        """
+        调用 mx-data claw/query 并自动处理 status=113 的备用 key 重试。
+        返回 raw json（status 必为0），否则抛异常。
+        """
+        self._load_env()
+        return self.mx_provider.query_json(tool_query, timeout_sec)
 
     def _fetch_spot_from_mx_data(self, watchlist):
         """
@@ -1167,8 +1162,6 @@ class DataFetcher:
         if not mx_key:
             raise ValueError("MX_APIKEY 未设置")
 
-        import json, urllib.request, urllib.error
-
         result = {}
         for stock in watchlist:
             code_raw = stock.get('code', '')
@@ -1177,84 +1170,8 @@ class DataFetcher:
 
             try:
                 query = f"{name}今日涨跌幅 最新价 成交额 换手率 量比 振幅 5日均线 20日均线"
-
-                def _do_mx_request(api_key):
-                    payload = json.dumps({"toolQuery": query}).encode('utf-8')
-                    req = urllib.request.Request(
-                        'https://mkapi2.dfcfs.com/finskillshub/api/claw/query',
-                        data=payload,
-                        headers={'Content-Type': 'application/json', 'apikey': api_key},
-                        method='POST'
-                    )
-                    return urlopen_json_with_retry(
-                        req=req,
-                        timeout=TIMEOUTS['mx_watchlist_sec'],
-                        retries=RETRY_POLICY['http_retries'],
-                        backoff_seconds=RETRY_POLICY['http_backoff_seconds'],
-                    )
-
-                # 用当前有效 key 请求（已耗尽时自动取备用 key）
-                cur_key = self._get_mx_apikey()
-                raw = _do_mx_request(cur_key)
-
-                # 检查业务状态码；status=113 时切换备用 key 并重试一次
-                api_status = raw.get('status', 0)
-                if api_status != 0:
-                    self._handle_mx_status(api_status, raw.get('message', ''))
-                    # _handle_mx_status 切换了 key，重试
-                    retry_key = self._get_mx_apikey()
-                    if retry_key and retry_key != cur_key:
-                        logger.info(f"mx-data 使用备用key重试: {name}")
-                        raw = _do_mx_request(retry_key)
-                        api_status = raw.get('status', 0)
-                        if api_status != 0:
-                            raise RuntimeError(f"mx-data 备用key也失败 status={api_status}: {raw.get('message','')}")
-                    else:
-                        raise RuntimeError(f"mx-data 无可用备用key，放弃")
-
-                # 正确解析路径：raw → data → data → searchDataResultDTO → dataTableDTOList
-                outer = raw.get('data') or {}
-                if not isinstance(outer, dict):
-                    logger.warning(f"mx-data data 层非dict: {type(outer)}, 跳过")
-                    continue
-                inner = outer.get('data') or {}
-                if not isinstance(inner, dict):
-                    logger.warning(f"mx-data data.data 层非dict: {type(inner)}, 跳过")
-                    continue
-                search_dto = inner.get('searchDataResultDTO', inner)
-                tables = search_dto.get('dataTableDTOList', [])
-
-                row = {}
-                for tbl in tables:
-                    name_map = tbl.get('nameMap', {})
-                    table_data = tbl.get('table', {})
-                    for fid, fname in name_map.items():
-                        vals = table_data.get(fid, [None])
-                        v = vals[0] if vals else None
-                        if v is None:
-                            continue
-                        fn = str(fname)
-                        # 统一去除百分号，转 float
-                        try:
-                            v_float = float(str(v).replace('%', '').strip())
-                        except (ValueError, TypeError):
-                            continue
-                        if '最新价' in fn or '收盘' in fn:
-                            row['price'] = v_float
-                        elif '涨跌幅' in fn:
-                            row['change_pct'] = v_float
-                        elif '成交额' in fn:
-                            row['amount'] = v_float
-                        elif '振幅' in fn:
-                            row['amplitude'] = v_float
-                        elif '换手率' in fn:
-                            row['turnover'] = v_float
-                        elif '量比' in fn:
-                            row['volume_ratio'] = v_float
-                        elif '5日' in fn and ('均线' in fn or 'MA' in fn.upper()):
-                            row['ma5'] = v_float
-                        elif '20日' in fn and ('均线' in fn or 'MA' in fn.upper()):
-                            row['ma20'] = v_float
+                raw = self._mx_query_json(query, TIMEOUTS['mx_watchlist_sec'])
+                row = self.mx_provider.parse_watchlist_row(raw)
 
                 if 'price' in row:
                     result[ak_code] = row
@@ -1518,102 +1435,22 @@ class DataFetcher:
         解析 mx-data 期指响应
         target_key: 'CSI300' 或 'A50'，如果传入则只返回对应 key 的数据，否则返回完整结构
         """
-        futures_data = {
-            "update_time": format_date(datetime.now(), '%Y-%m-%d %H:%M:%S'),
-            "futures": {}
-        }
-
         try:
-            # 解析路径：result['data']['data']['searchDataResultDTO']['dataTableDTOList']
-            outer = result.get('data', {})
-            inner = outer.get('data', {})
-            search_dto = inner.get('searchDataResultDTO', {})
-
-            # 调试：记录完整结构
-            logger.debug(f"mx-data 期指响应结构: outer_keys={list(outer.keys())}, inner_keys={list(inner.keys())}, search_dto_keys={list(search_dto.keys())}")
-
-            tables = search_dto.get('dataTableDTOList', [])
-
-            if not tables:
-                # 尝试其他可能的路径
-                tables = inner.get('dataTableDTOList', []) or result.get('dataTableDTOList', [])
-                logger.debug(f"尝试备用路径获取 tables: 找到 {len(tables)} 条")
-
-            for table in tables:
-                title = table.get('title', '').lower()
-                name_map = table.get('nameMap', {})
-                table_data = table.get('table', {})
-
-                logger.debug(f"期指表格: title={title}, nameMap={name_map}, table_keys={list(table_data.keys())}")
-
-                # 通过 nameMap 查找涨跌幅字段
-                change_pct = 0.0
-                close_price = None
-
-                # 方法1: 在 nameMap 中查找"涨跌幅"
-                for field_id, field_name in name_map.items():
-                    if field_name == '涨跌幅':
-                        values = table_data.get(field_id, [])
-                        if values and values[0] not in ['-', '', None]:
-                            # 兼容带 % 的字符串，如 '-0.23%' 或 '0.5'
-                            try:
-                                val_str = str(values[0]).strip().rstrip('%')
-                                change_pct = float(val_str)
-                            except (ValueError, TypeError):
-                                change_pct = 0.0
-                        break
-                    elif field_name == '收盘价':
-                        values = table_data.get(field_id, [])
-                        if values and values[0] not in ['-', '', None]:
-                            try:
-                                close_price = float(str(values[0]).strip().replace(',', ''))
-                            except (ValueError, TypeError):
-                                close_price = None
-
-                logger.debug(f"解析表格: title={title}, change_pct={change_pct}, close_price={close_price}")
-
-                # entityName 在表格外层，不在 nameMap 里
-                entity_name = table.get('entityName', '').lower()
-
-                # 判断是A50还是沪深300（title 和 entityName 同时匹配）
-                future_key = None
-                if 'a50' in title or 'a50' in entity_name:
-                    future_key = 'A50'
-                elif '沪深300' in title or '沪深300' in entity_name or 'hs300' in title or 'csi300' in title:
-                    future_key = 'CSI300'
-
-                if future_key:
-                    # 如果指定了 target_key，且不匹配则跳过
-                    if target_key and future_key != target_key:
-                        continue
-
-                    # 优先取"最新价"表（headName 含今日时间，字段为 f2/f3 而非数字ID）
-                    # 判断：nameMap 含 f2/f3 这类短字段 ID 的是实时行情表，数字ID是历史收盘
-                    is_realtime = any(k.startswith('f') for k in name_map.keys())
-                    if future_key in futures_data['futures'] and not is_realtime:
-                        # 已有数据且当前表是历史表，跳过不覆盖
-                        logger.debug(f"跳过历史收盘表，保留实时行情: {future_key}")
-                        continue
-
-                    item = asdict(FuturesItem(
-                        name="A50期指" if future_key == 'A50' else "沪深300期指",
-                        code="CFF_RE_IF",
-                        change_pct=change_pct,
-                        impact=self._generate_impact_text(change_pct, "A50" if future_key == 'A50' else "沪深300"),
-                    ))
-                    item["is_realtime"] = is_realtime
-                    futures_data['futures'][future_key] = item
-                    logger.info(f"✅ 解析到{future_key}: {change_pct}% ({'实时' if is_realtime else '历史收盘'})")
-
+            futures_data = self.mx_provider.parse_futures(
+                raw=result,
+                build_impact_text=self._generate_impact_text,
+                target_key=target_key,
+            )
         except Exception as e:
             logger.warning(f"解析 mx-data 期指响应失败: {e}")
             import traceback
             logger.debug(traceback.format_exc())
+            return None if target_key else {"update_time": format_date(datetime.now(), '%Y-%m-%d %H:%M:%S'), "futures": {}}
 
-        # 如果指定了 target_key 且没有找到，返回 None
-        if target_key and target_key not in futures_data['futures']:
+        if target_key and not futures_data:
             return None
 
+        futures_data['update_time'] = format_date(datetime.now(), '%Y-%m-%d %H:%M:%S')
         return futures_data
 
     def _generate_impact_text(self, change_pct, name):
@@ -1699,144 +1536,17 @@ class DataFetcher:
         返回与 akshare stock_sector_fund_flow_rank 相同的结构
         """
         self._load_env()
-        mx_apikey = os.getenv('MX_APIKEY')
+        mx_apikey = self._get_mx_apikey()
         if not mx_apikey:
             return {"success": False, "data": None, "error": "MX_APIKEY 未设置", "source": "none"}
 
         try:
-            import json
-            import urllib.request
-
             query = "A股行业板块资金流向排名 今日主力净流入 净流入 排名 板块名称 领涨股"
-            payload = json.dumps({"toolQuery": query}).encode('utf-8')
-            req = urllib.request.Request(
-                'https://mkapi2.dfcfs.com/finskillshub/api/claw/query',
-                data=payload,
-                headers={'Content-Type': 'application/json', 'apikey': mx_apikey},
-                method='POST'
+            raw = self._mx_query_json(query, TIMEOUTS['mx_industry_flow_sec'])
+            data = self.mx_provider.parse_industry_fund_flow(
+                raw=raw,
+                update_time=format_date(datetime.now()),
             )
-            raw = urlopen_json_with_retry(
-                req=req,
-                timeout=TIMEOUTS['mx_industry_flow_sec'],
-                retries=RETRY_POLICY['http_retries'],
-                backoff_seconds=RETRY_POLICY['http_backoff_seconds'],
-            )
-
-            api_status = raw.get('status', 0)
-            if api_status == 0:
-                pass
-            elif api_status == 113:
-                self._mx_key_exhausted = True
-                backup = os.getenv('MX_APIKEY_BACKUP', '')
-                if backup:
-                    logger.warning(f"mx-data 主key耗尽，切换备用key")
-                    req2 = urllib.request.Request(
-                        'https://mkapi2.dfcfs.com/finskillshub/api/claw/query',
-                        data=payload,
-                        headers={'Content-Type': 'application/json', 'apikey': backup},
-                        method='POST'
-                    )
-                    raw = urlopen_json_with_retry(
-                        req=req2,
-                        timeout=TIMEOUTS['mx_industry_flow_sec'],
-                        retries=RETRY_POLICY['http_retries'],
-                        backoff_seconds=RETRY_POLICY['http_backoff_seconds'],
-                    )
-                else:
-                    return {"success": False, "data": None, "error": f"mx-data 调用耗尽 status={api_status}", "source": "none"}
-            else:
-                return {"success": False, "data": None, "error": f"mx-data 返回异常 status={api_status}", "source": "none"}
-
-            # 解析 mx-data 返回的数据
-            outer = raw.get('data') or {}
-            inner = outer.get('data') or {}
-            search_dto = inner.get('searchDataResultDTO', {})
-            tables = search_dto.get('dataTableDTOList', [])
-
-            if not tables:
-                return {"success": False, "data": None, "error": "mx-data 未返回行业资金流数据", "source": "none"}
-
-            inflow_top5 = []
-            outflow_top5 = []
-            all_rows = []
-
-            for tbl in tables:
-                name_map = tbl.get('nameMap', {})
-                table_data = tbl.get('table', {})
-
-                # 构建列名到字段ID的映射
-                col_to_id = {}
-                for fid, fname in name_map.items():
-                    col_to_id[str(fname)] = fid
-
-                rank_id = col_to_id.get('排名')
-                net_id = col_to_id.get('今日主力净流入-净额')
-
-                if not rank_id or not net_id:
-                    continue
-
-                rank_vals = table_data.get(rank_id, [])
-                if not rank_vals:
-                    continue
-
-                rows = []
-                num_rows = max(len(table_data.get(fid, [])) for fid in table_data if fid in name_map)
-                for i in range(num_rows):
-                    row = {}
-                    for py_name, cn_name in {'rank': '排名', 'industry_name': '名称', 'net_inflow': '今日主力净流入-净额', 'change_pct': '今日涨跌幅', 'leading_stock': '今日主力净流入最大股'}.items():
-                        fid = col_to_id.get(cn_name)
-                        if fid and fid in table_data:
-                            vals = table_data[fid]
-                            if i < len(vals) and vals[i] not in ['-', '', None]:
-                                row[py_name] = vals[i]
-                    if 'rank' in row:
-                        try:
-                            row['rank_int'] = int(row['rank'])
-                            try:
-                                row['net_inflow_val'] = float(row['net_inflow'])
-                            except (ValueError, TypeError):
-                                row['net_inflow_val'] = 0
-                            rows.append(row)
-                        except (ValueError, TypeError):
-                            pass
-
-                all_rows.extend(rows)
-
-            # 按净流入绝对值排序
-            all_rows.sort(key=lambda x: x.get('net_inflow_val', 0), reverse=True)
-
-            for idx, r in enumerate(all_rows):
-                entry = {
-                    "rank": idx + 1,
-                    "industry": str(r.get('industry_name', '')),
-                    "net_inflow": r.get('net_inflow_val', 0),
-                    "leading_stock": str(r.get('leading_stock', '')),
-                }
-                if 'change_pct' in r:
-                    try:
-                        entry["leading_stock_change"] = float(r['change_pct'])
-                    except (ValueError, TypeError):
-                        entry["leading_stock_change"] = 0
-
-                if r.get('net_inflow_val', 0) > 0:
-                    if len(inflow_top5) < 5:
-                        entry['rank'] = len(inflow_top5) + 1
-                        inflow_top5.append(entry)
-                else:
-                    if len(outflow_top5) < 5:
-                        outflow_top5.append(entry)
-
-            # 反转 outflow 使其从流出最多到最少
-            outflow_top5.reverse()
-            for idx, item in enumerate(outflow_top5):
-                item['rank'] = idx + 1
-
-            data = {
-                "update_time": format_date(datetime.now()),
-                "total_industries": len(all_rows),
-                "top_net_inflow": inflow_top5,
-                "top_net_outflow": outflow_top5
-            }
 
             return {"success": True, "data": data, "source": "mx-data", "cached": False}
 

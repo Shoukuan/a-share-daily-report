@@ -8,6 +8,7 @@ from datetime import datetime
 import math
 
 from constants import INDEX_DISPLAY_ORDER, ALL_INDICES
+from utils.helpers import cn_now
 from models import (
     RenderRiskWarning,
     RenderWatchlistItem,
@@ -38,9 +39,9 @@ class MorningRenderer:
 
     def render_morning_report(self, analysis_result, dt=None):
         if dt is None:
-            dt = datetime.now()
+            dt = cn_now()
         date_str = format_date(dt)
-        gen_time = format_date(datetime.now(), '%Y-%m-%d %H:%M')
+        gen_time = format_date(cn_now(), '%Y-%m-%d %H:%M')
 
         summary = analysis_result.get('summary')
         summary_data = summary.get('data', {}) if isinstance(summary, dict) else {}

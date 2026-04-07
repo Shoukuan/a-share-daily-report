@@ -34,7 +34,7 @@ class TestIntegration:
         monkeypatch.setattr(generator, "_fetch_morning_data", lambda dt: {"sentiment": {"success": True, "data": {}}})
         monkeypatch.setattr(generator, "_analyze_morning_data", lambda data: {"summary": {"data": {"one_sentence": "ok"}}})
         monkeypatch.setattr(generator.renderer, "render_morning_report", lambda analysis, dt: "# A股日报 - 早报预测版\n")
-        monkeypatch.setattr(generator, "_save_report", lambda markdown, mode, dt: ("/tmp/morning.md", "/tmp/morning.pdf"))
+        monkeypatch.setattr(generator.saver, "save_report_with_pdf", lambda markdown, mode, dt: ("/tmp/morning.md", "/tmp/morning.pdf"))
 
         result = generator.generate_morning_report("2026-04-01", publish=False)
 
@@ -50,16 +50,15 @@ class TestIntegration:
         generator = _build_generator()
 
         monkeypatch.setattr(generator, "_fetch_evening_data", lambda dt: {"sentiment": {"success": True, "data": {}}})
-        monkeypatch.setattr(generator, "_analyze_evening_data", lambda data: {"summary": {"data": {"one_sentence": "ok"}}})
+        monkeypatch.setattr(generator, "_analyze_evening_data", lambda data, dt=None: {"summary": {"data": {"one_sentence": "ok"}}})
         monkeypatch.setattr(generator.renderer, "render_evening_report", lambda analysis, dt: "# A股日报 - 晚报复盘版\n")
-        monkeypatch.setattr(generator, "_save_report", lambda markdown, mode, dt: "/tmp/evening.md")
+        monkeypatch.setattr(generator.saver, "save_report_with_pdf", lambda markdown, mode, dt: ("/tmp/evening.md", None))
 
         result = generator.generate_evening_report("2026-04-01", publish=False)
 
         assert isinstance(result, dict)
         assert result["output_path"] == "/tmp/evening.md"
         assert result["report_path"] == "/tmp/evening.md"
-        assert "pdf_path" not in result
         assert result["mode"] == "evening"
         assert result["date"] == "2026-04-01"
 
@@ -76,7 +75,7 @@ class TestIntegration:
         monkeypatch.setattr(generator, "_fetch_morning_data", fake_fetch)
         monkeypatch.setattr(generator, "_analyze_morning_data", lambda data: {})
         monkeypatch.setattr(generator.renderer, "render_morning_report", lambda analysis, dt: "# mock\n")
-        monkeypatch.setattr(generator, "_save_report", lambda markdown, mode, dt: "/tmp/nontrade.md")
+        monkeypatch.setattr(generator.saver, "save_report_with_pdf", lambda markdown, mode, dt: ("/tmp/nontrade.md", None))
 
         result = generator.generate_morning_report("2026-03-29", publish=False)
 

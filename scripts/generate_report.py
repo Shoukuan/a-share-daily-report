@@ -6,6 +6,7 @@ A股日报生成器 - 主入口脚本
 
 import os
 import sys
+import json
 import argparse
 import yaml
 from datetime import datetime, date
@@ -25,6 +26,7 @@ from utils import (
     get_trace_id,
     stage_timer,
     monitor_stage,
+    cn_now,
 )
 from data_fetcher import DataFetcher
 from analyzer import Analyzer
@@ -35,6 +37,7 @@ from data_collectors import MorningDataCollector, EveningDataCollector
 from config_validator import validate_config
 from errors import DataFetchError, AnalysisError, RenderError
 from report_saver import ReportSaver
+from prediction_store import save_morning_prediction, load_morning_prediction, compare_predictions
 
 logger = get_logger('report_generator')
 
@@ -67,6 +70,17 @@ class ReportGenerator:
         self.evening_collector = EveningDataCollector(self.data_fetcher, self.analyzer, logger)
 
         log_event(logger, "info", "report_generator_init", config_path=config_path)
+
+    def _write_audit_log(self, record: dict):
+        """将审计记录追加写入 logs/audit.jsonl（JSONL 格式，每行一个 JSON 对象）。"""
+        try:
+            logs_dir = os.path.join(get_project_root(), 'logs')
+            os.makedirs(logs_dir, exist_ok=True)
+            audit_path = os.path.join(logs_dir, 'audit.jsonl')
+            with open(audit_path, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(record, ensure_ascii=False) + '\n')
+        except Exception as e:
+            logger.warning(f"审计日志写入失败（不影响主流程）: {e}")
 
     def _load_config(self, config_path):
         try:
@@ -121,6 +135,16 @@ class ReportGenerator:
         date_str = format_date(effective_dt)
         log_event(logger, "info", "report_effective_date", mode="morning", date=date_str)
 
+        _dry_run = os.environ.get('A_SHARE_DRY_RUN', '0') == '1'
+        _start_time = cn_now()
+        self._write_audit_log({
+            "event": "report_start",
+            "timestamp": _start_time.isoformat(),
+            "mode": "morning",
+            "pid": os.getpid(),
+            "dry_run": _dry_run,
+        })
+
         # 总体超时保护（步骤1-5）
         try:
             def _do_generate():
@@ -145,17 +169,40 @@ class ReportGenerator:
                 logger.info("步骤4: 保存报告...")
                 with stage_timer("report.morning.save"):
                     output_path, pdf_path = self.saver.save_report_with_pdf(markdown, 'morning', effective_dt)
+                # 步骤5: 保存早报预测快照（供晚报复盘）
+                self._save_morning_prediction_snapshot(analysis_result, effective_dt)
                 return markdown, output_path, pdf_path
 
             markdown, output_path, pdf_path = run_with_timeout(_do_generate, total_timeout)
         except TimeoutError as e:
             log_event(logger, "error", "report_generate_timeout", mode="morning", error=e)
+            self._write_audit_log({
+                "event": "report_failure",
+                "timestamp": cn_now().isoformat(),
+                "mode": "morning",
+                "error": f"TimeoutError: {e}",
+                "duration_seconds": round((cn_now() - _start_time).total_seconds(), 3),
+            })
             raise
         except (DataFetchError, AnalysisError, RenderError) as e:
             log_event(logger, "error", "report_generate_stage_error", mode="morning", error=e)
+            self._write_audit_log({
+                "event": "report_failure",
+                "timestamp": cn_now().isoformat(),
+                "mode": "morning",
+                "error": f"{type(e).__name__}: {e}",
+                "duration_seconds": round((cn_now() - _start_time).total_seconds(), 3),
+            })
             raise
         except Exception as e:
             log_event(logger, "error", "report_generate_error", mode="morning", error=e)
+            self._write_audit_log({
+                "event": "report_failure",
+                "timestamp": cn_now().isoformat(),
+                "mode": "morning",
+                "error": f"{type(e).__name__}: {e}",
+                "duration_seconds": round((cn_now() - _start_time).total_seconds(), 3),
+            })
             raise
 
         result = {
@@ -168,6 +215,15 @@ class ReportGenerator:
         }
         if pdf_path:
             result['pdf_path'] = pdf_path
+
+        self._write_audit_log({
+            "event": "report_success",
+            "timestamp": cn_now().isoformat(),
+            "mode": "morning",
+            "duration_seconds": round((cn_now() - _start_time).total_seconds(), 3),
+            "output_path": str(output_path) if output_path else None,
+            "dry_run": _dry_run,
+        })
 
         if publish:
             log_event(logger, "info", "report_publish_start", mode="morning")
@@ -206,6 +262,16 @@ class ReportGenerator:
         date_str = format_date(effective_dt)
         log_event(logger, "info", "report_effective_date", mode="evening", date=date_str)
 
+        _dry_run = os.environ.get('A_SHARE_DRY_RUN', '0') == '1'
+        _start_time = cn_now()
+        self._write_audit_log({
+            "event": "report_start",
+            "timestamp": _start_time.isoformat(),
+            "mode": "evening",
+            "pid": os.getpid(),
+            "dry_run": _dry_run,
+        })
+
         # 总体超时保护（步骤1-5）
         try:
             def _do_generate():
@@ -218,7 +284,7 @@ class ReportGenerator:
                 logger.info("步骤2: 分析数据...")
                 with stage_timer("report.evening.analyze"):
                     try:
-                        analysis_result = self._analyze_evening_data(data)
+                        analysis_result = self._analyze_evening_data(data, dt=effective_dt)
                     except Exception as e:
                         raise AnalysisError(str(e)) from e
                 logger.info("步骤3: 渲染报告...")
@@ -235,12 +301,33 @@ class ReportGenerator:
             markdown, output_path, pdf_path = run_with_timeout(_do_generate, total_timeout)
         except TimeoutError as e:
             log_event(logger, "error", "report_generate_timeout", mode="evening", error=e)
+            self._write_audit_log({
+                "event": "report_failure",
+                "timestamp": cn_now().isoformat(),
+                "mode": "evening",
+                "error": f"TimeoutError: {e}",
+                "duration_seconds": round((cn_now() - _start_time).total_seconds(), 3),
+            })
             raise
         except (DataFetchError, AnalysisError, RenderError) as e:
             log_event(logger, "error", "report_generate_stage_error", mode="evening", error=e)
+            self._write_audit_log({
+                "event": "report_failure",
+                "timestamp": cn_now().isoformat(),
+                "mode": "evening",
+                "error": f"{type(e).__name__}: {e}",
+                "duration_seconds": round((cn_now() - _start_time).total_seconds(), 3),
+            })
             raise
         except Exception as e:
             log_event(logger, "error", "report_generate_error", mode="evening", error=e)
+            self._write_audit_log({
+                "event": "report_failure",
+                "timestamp": cn_now().isoformat(),
+                "mode": "evening",
+                "error": f"{type(e).__name__}: {e}",
+                "duration_seconds": round((cn_now() - _start_time).total_seconds(), 3),
+            })
             raise
 
         result = {
@@ -253,6 +340,15 @@ class ReportGenerator:
         }
         if pdf_path:
             result['pdf_path'] = pdf_path
+
+        self._write_audit_log({
+            "event": "report_success",
+            "timestamp": cn_now().isoformat(),
+            "mode": "evening",
+            "duration_seconds": round((cn_now() - _start_time).total_seconds(), 3),
+            "output_path": str(output_path) if output_path else None,
+            "dry_run": _dry_run,
+        })
 
         if publish:
             log_event(logger, "info", "report_publish_start", mode="evening")
@@ -284,7 +380,7 @@ class ReportGenerator:
         result['watchlist_morning'] = self.analyzer.analyze_watchlist_morning(data)
         result['strategy'] = self.analyzer.generate_trading_strategy(data)
         result['focus_stocks'] = self.analyzer.analyze_focus_stocks(data)
-        result['position'] = self.analyzer.suggest_position(data)
+        result['position'] = self.analyzer.suggest_position_with_risk_plan(data)  # 使用带风险预案的仓位建议
         result['us_market'] = data.get('us_market', {})
         result['futures'] = data.get('futures', {})  # 新增期指数据
         result['international_events'] = data.get('international_events', {})  # 国际事件
@@ -308,7 +404,16 @@ class ReportGenerator:
 
         return result
 
-    def _analyze_evening_data(self, data):
+    def _save_morning_prediction_snapshot(self, analysis_result, dt):
+        """早报生成后保存预测快照，供晚报复盘使用。"""
+        try:
+            watchlist_data = analysis_result.get('watchlist_morning', {}).get('data', [])
+            position_data = analysis_result.get('position', {}).get('data', {})
+            save_morning_prediction(dt, watchlist_data, position_data)
+        except Exception as e:
+            logger.warning(f'保存早报预测快照失败: {e}')
+
+    def _analyze_evening_data(self, data, dt=None):
         result = {}
         try:
             logger.info("生成30秒速览...")
@@ -322,16 +427,25 @@ class ReportGenerator:
         except Exception as e:
             logger.error(f"watchlist 失败: {e}")
             result['watchlist_evening'] = {"success": False, "data": None}
-        
-        # 新模块：每个独立 try-except，不因单个失败中断
-        for key in ['market_overview', 'market_depth', 'major_indices', 'global_assets']:
+
+        # 调用分析方法（而非直接透传原始数据）
+        for key, method_name in [
+            ('market_overview', 'analyze_market_overview'),
+            ('market_depth', 'analyze_market_depth'),
+            ('major_indices', 'analyze_major_indices'),
+            ('global_assets', 'analyze_global_assets'),
+        ]:
             try:
-                result[key] = data.get(key, {})
-                logger.info(f"[OK] {key}: data ready")
+                method = getattr(self.analyzer, method_name, None)
+                if method:
+                    result[key] = method(data)
+                    logger.info(f"[OK] {key}: success={result[key].get('success')}")
+                else:
+                    result[key] = data.get(key, {})
             except Exception as e:
                 logger.error(f"{key} 失败: {e}")
                 result[key] = {"success": False, "data": None}
-        
+
         # 技术分析类
         for key in ['technical', 'comprehensive', 'theme_tracking']:
             try:
@@ -344,15 +458,15 @@ class ReportGenerator:
             except Exception as e:
                 logger.error(f"{key} 失败: {e}")
                 result[key] = {"success": False, "data": None, "error": str(e)}
-        
+
         # 打通 money_flow → market_overview 的北向资金
         self._patch_market_overview_northbound(result)
-        
+
         # 传递原始数据供渲染器使用
         for key in ['index_sh', 'index_sz', 'index_cyb', 'sentiment', 'money_flow',
                      'industry_fund_flow', 'sectors', 'lhb']:
             result[key] = data.get(key, {})
-        
+
         # 新闻分类
         try:
             news_list = data.get('news', {}).get('data', [])
@@ -360,7 +474,30 @@ class ReportGenerator:
         except Exception as e:
             logger.error(f"news 失败: {e}")
             result['news'] = {"success": False, "data": []}
-        
+
+        # 早报预测 vs 晚报实际复盘
+        try:
+            if dt is not None:
+                morning_pred = load_morning_prediction(dt)
+                actual_stocks = result.get('watchlist_evening', {}).get('data', {}).get('stocks', [])
+                result['prediction_review'] = compare_predictions(morning_pred, actual_stocks)
+                logger.info(f"[OK] prediction_review: {result['prediction_review'].get('summary_line', '')}")
+            else:
+                result['prediction_review'] = None
+        except Exception as e:
+            logger.warning(f"prediction_review 失败: {e}")
+            result['prediction_review'] = None
+
+        # 策略调整分析（可选）
+        try:
+            effective_dt = dt if dt else get_effective_date(dt=None, mode='evening')
+            morning_pred = load_morning_prediction(effective_dt) if effective_dt else None
+            result['strategy_adjustment'] = self.analyzer.analyze_strategy_adjustment(data, morning_pred)
+            logger.info(f"[OK] strategy_adjustment: {result['strategy_adjustment'].get('data', {}).get('adjustment_reason', '')}")
+        except Exception as e:
+            logger.warning(f"strategy_adjustment 失败: {e}")
+            result['strategy_adjustment'] = None
+
         logger.info(f"analysis_result keys: {list(result.keys())}")
         return result
 
@@ -394,12 +531,21 @@ def main():
                         help='配置文件路径')
     parser.add_argument('--publish', action='store_true',
                         help='发布到飞书（需要配置 feishu）')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='模拟发布（不发送真实请求，即使在 OpenClaw 环境下）')
     parser.add_argument('--outdir', type=str, default=None,
                         help='输出目录（覆盖配置文件中的设置）')
 
     args = parser.parse_args()
 
     generator = ReportGenerator(args.config)
+
+    # dry-run: 设置环境变量让 Publisher 进入模拟模式
+    if args.dry_run:
+        os.environ['A_SHARE_DRY_RUN'] = '1'
+        # 重新初始化 publisher 使 dry_run 生效
+        generator.publisher = type(generator.publisher)(generator.config)
+        generator.saver = type(generator.saver)(generator.config, generator.publisher)
 
     # 如果指定了outdir，覆盖配置
     if args.outdir:

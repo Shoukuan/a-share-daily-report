@@ -65,3 +65,13 @@ publish:
       📄 飞书文档：{doc_url}
       📑 PDF文件：{pdf_path}
 
+# 分析参数配置
+analysis:
+  # 凯利公式参数
+  # win_rate: 策略胜率，取值 0-1。默认 0.5（等概率），建议通过回测校准后修改
+  # risk_reward_ratio: 盈亏比（赢时盈利 / 输时亏损）。默认 2.0（1:2 止损止盈）
+  # half_kelly: 是否使用半凯利（更保守）。true = 最终仓位上限 × 0.5
+  kelly:
+    win_rate: 0.5
+    risk_reward_ratio: 2.0
+    half_kelly: false

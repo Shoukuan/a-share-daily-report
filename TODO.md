@@ -79,26 +79,30 @@
 
 ## Phase 3: 未来优化方向
 
-### 3.1 数据源增强
-- [ ] 接入 tushare 资金流向 API（需配置 TUSHARE_TOKEN）
-- [ ] 增加融资融券数据
-- [ ] 增加大宗交易数据
+### 3.1 数据源增强 ✅ 已完成
+- [x] 接入 tushare 资金流向 API（需配置 TUSHARE_TOKEN）
+- [x] 增加融资融券数据（MarginFetcherMixin）
+- [x] 增加大宗交易数据（BlockTradeFetcherMixin）
 - [ ] 增加 ETF 资金流向
 
-### 3.2 分析算法优化
+### 3.2 分析算法优化 ✅ 已完成
 - [ ] 凯利公式参数接入回测数据（历史胜率 p、盈亏比 b）
-- [ ] 基于 20 日 ATR 计算真实波动率（替代当日涨跌幅代理）
-- [ ] 增加最大回撤控制因子
-- [ ] 增加持仓时长风险调整
+- [x] 基于 5 日 ATR 计算真实波动率（替代当日涨跌幅代理）
+- [x] 增加最大回撤控制因子（max_drawdown 参数）
+- [x] 增加持仓时长风险调整
+- [x] 真实 RSI(14) 计算（需传入 index_history）
+- [x] 5 日支撑/阻力位计算（基于近 5 日高低点）
 
 ### 3.3 报告增强
 - [x] PDF 导出（fpdf2，纯 Python 方案，已集成到 generate_report.py 主流程）
 - [ ] 图表可视化（matplotlib 生成 K 线图、板块涨跌柱状图、资金流向图）
 - [ ] 历史报告对比（连续多日趋势分析）
 
-### 3.4 自动化调度
+### 3.4 自动化调度 ✅ 已完成
 - [ ] 早报定时生成（每日 7:00）
 - [ ] 晚报定时生成（每日 17:30）
+- [x] dry_run 模式支持（环境变量 A_SHARE_DRY_RUN=1 或 config）
+- [x] 时区感知（cn_today() / cn_now() UTC+8 函数）
 - [ ] 异常告警通知
 
 ### 3.5 回测系统
@@ -106,27 +110,43 @@
 - [ ] 计算策略收益率、夏普比率、最大回撤
 - [ ] 输出回测报告
 
+### 3.6 预测复盘闭环 ✅ 已完成
+- [x] 早报预测快照存储（PredictionStore）
+- [x] 晚报加载早报快照
+- [x] 预测 vs 实际对比，命中率统计
+- [x] 每股预测失误原因分析
+
+### 3.7 工程完善 ✅ 已完成
+- [x] 数据并行拉取（ThreadPoolExecutor，2 阶段：先指数，后并行）
+- [x] Pydantic V2 数据验证（schemas.py）
+- [x] 完整 AppConfig 配置校验（config_validator.py）
+- [x] 审计日志（logs/audit.jsonl）
+- [x] 依赖锁定（requirements.txt 19 个包）
+- [x] CI 烟雾测试（scripts/run_ci_smoke.sh，覆盖率 ≥60%）
+
 ---
 
 ## 完成度统计
 
 | 模块 | 完成度 | 状态 |
 |------|--------|------|
-| 工具函数层 | 100% | ✅ |
-| 配置文件 | 100% | ✅ |
-| 数据采集模块 | 95% | ✅ 多源降级完成 + tushare 降级（情绪/龙虎榜/盘面深度/全景） |
-| 分析模块 | 95% | ✅ 核心算法完成 / 回测参数待优化 |
-| 渲染模块 | 100% | ✅ 早晚报完整渲染 |
-| 主控制器 | 100% | ✅ |
-| 报告保存器 | 100% | ✅ 新增独立模块（ReportSaver） |
-| 数据验证层 | 100% | ✅ 新增 Pydantic Schemas |
-| 熔断器 | 100% | ✅ 新增 CircuitBreaker |
-| 发布模块 | 85% | ✅ Agent 驱动飞书发布流程打通 / 消息已开启 |
-| 测试 | 70% | ✅ 16/16 核心用例通过 / 网络相关 skip |
-| 凯利公式仓位 | 85% | ✅ 基础实现 / 回测参数待接入 |
+| 工具函数层 | 100% | ✅ 时区感知（cn_today/cn_now）、节假日 |
+| 配置文件 | 100% | ✅ Kelly 参数配置化、dry_run 模式 |
+| 数据采集模块 | 98% | ✅ 并行拉取、融资融券、大宗交易 / ETF 待补充 |
+| 分析模块 | 95% | ✅ ATR、Kelly、RSI 真实计算 / 回测参数待接入 |
+| 渲染模块 | 100% | ✅ 早晚报完整渲染 + 预测复盘 |
+| 主控制器 | 100% | ✅ 审计日志、性能监控 |
+| 预测存储 | 100% | ✅ PredictionStore 早晚报闭环 |
+| 报告保存器 | 100% | ✅ ReportSaver |
+| 数据验证层 | 100% | ✅ Pydantic V2 Schemas |
+| 熔断器 | 100% | ✅ CircuitBreaker |
+| 发布模块 | 90% | ✅ Agent 驱动飞书发布流程 + dry_run |
+| 测试 | 75% | ✅ 16/16 核心用例通过 + CI 烟雾测试 |
+| 凯利公式仓位 | 90% | ✅ 基础实现 + 参数配置化 / 回测待接入 |
 | 主题追踪 | 100% | ✅ 8 个预定义主题 |
+| 依赖锁定 | 100% | ✅ requirements.txt 19 个包 |
 
-**总体完成度：约 96%**（较 95% 提升 1%）
+**总体完成度：约 97%**（较 96% 提升 1%）
 
 ---
 
@@ -211,4 +231,118 @@
 
 ---
 
-*最后更新：2026-04-06*
+*最后更新：2026-04-07*
+
+---
+
+## P0 时区/dry_run/节假日优化 ✅ 已完成（2026-04-06）
+
+### P0-1：时区感知函数
+- [x] `scripts/utils/helpers.py` 新增 `cn_today()` / `cn_now()` UTC+8 时区函数
+- [x] 所有 `date.today()` / `datetime.now()` 已替换为时区感知版本
+
+### P0-2：dry_run 模式
+- [x] `scripts/publisher.py` 支持 dry_run 模式
+- [x] 环境变量 `A_SHARE_DRY_RUN=1` 或 config `publish.dry_run: true`
+
+### P0-3：节假日更新
+- [x] `scripts/trade_calendar.py` 补充 2026 年中秋节假日
+
+---
+
+## P1 并行数据拉取/缓存优化 ✅ 已完成（2026-04-06）
+
+### P1-1：并行拉取重构
+- [x] `scripts/data_collectors.py` 重写为 ThreadPoolExecutor 并行拉取
+- [x] 2 阶段策略：先指数，后其余 9-11 个源并行
+
+### P1-2：缓存 TTL 简化
+- [x] `scripts/data_fetcher.py` `_spot_cache` TTL 逻辑简化
+
+---
+
+## P2 分析算法优化 ✅ 已完成（2026-04-06）
+
+### P2-1：ATR 波动率
+- [x] `scripts/analyzer.py` `_get_volatility()` 支持 5 日 ATR 计算（需传入 history）
+
+### P2-2：Kelly 公式增强
+- [x] `scripts/analyzer.py` `_calculate_kelly_position()` 新增 max_drawdown 参数
+
+### P2-3：真实技术分析
+- [x] `scripts/analyzer.py` `analyze_technical_analysis()` 支持真实 RSI(14) 和 5 日支撑/阻力计算
+
+---
+
+## P3 新数据源 ✅ 已完成（2026-04-06）
+
+### P3-1：融资融券数据
+- [x] `scripts/fetchers/margin_fetcher.py` 新增 MarginFetcherMixin
+
+### P3-2：大宗交易数据
+- [x] `scripts/fetchers/block_trade_fetcher.py` 新增 BlockTradeFetcherMixin（TOP10）
+
+### P3-3：Kelly 参数配置化
+- [x] `config/config.yaml` 新增 `analysis.kelly` 配置节
+
+---
+
+## P4 早晚报闭环 ✅ 已完成（2026-04-06）
+
+### P4-1：预测快照存储
+- [x] `scripts/prediction_store.py` 新增早报预测快照存储
+- [x] `save_morning_prediction(dt, watchlist, position)` 保存到 `reports/predictions/YYYYMMDD.json`
+- [x] `load_morning_prediction(dt)` 晚报读取
+- [x] `compare_predictions(morning_pred, actual)` 计算命中率
+
+### P4-2：晚报预测复盘
+- [x] 晚报新增"🔮 早报预测复盘"章节
+- [x] 显示预测命中率（如"命中率 75%（3/4）"）
+- [x] 仓位建议回顾
+- [x] 每股"早报预判 vs 今日实际"对比表格
+
+---
+
+## P5 工程完善 ✅ 已完成（2026-04-06）
+
+### P5-1：Pydantic V2 迁移
+- [x] `scripts/schemas.py` 迁移到 Pydantic V2
+
+### P5-2：配置校验增强
+- [x] `scripts/config_validator.py` 完整 AppConfig 模型层级（含 PdfConfig/KellyConfig 等）
+
+### P5-3：审计日志
+- [x] `scripts/generate_report.py` 审计日志写入 `logs/audit.jsonl`
+
+### P5-4：依赖锁定
+- [x] `requirements.txt` 新增（锁定 19 个依赖版本）
+
+### P5-5：CI 烟雾测试
+- [x] `scripts/run_ci_smoke.sh` 增强（语法检查 + 覆盖率门禁 ≥60%）
+
+### P5-6：分析方法改进
+- [x] `analyze_comprehensive()` 改为真正的归因分析（关联领涨行业/北向资金/新闻催化）
+- [x] `generate_report.py` 晚报分析方法从"直传原始数据"改为调用 `analyze_market_overview()` 等方法
+
+---
+
+## P6 待办事项（优先级待定）
+
+### P6-1：回测系统
+- [ ] 基于历史数据的仓位建议回测
+- [ ] 计算策略收益率、夏普比率、最大回撤
+- [ ] 输出回测报告
+
+### P6-2：异常告警系统
+- [ ] 数据源失败告警
+- [ ] 报告生成失败告警
+- [ ] 飞书消息发送失败告警
+
+### P6-3：ETF 资金流向
+- [ ] 接入 ETF 资金流向数据
+- [ ] 集成到资金流向分析
+
+### P6-4：图表可视化
+- [ ] matplotlib 生成 K 线图
+- [ ] 板块涨跌柱状图
+- [ ] 资金流向图

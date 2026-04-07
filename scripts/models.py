@@ -187,6 +187,7 @@ class RenderWatchlistEveningRow:
     avg_score: str
     signal: str
     reason: str
+    reason_category: str = "-"
 
 
 @dataclass

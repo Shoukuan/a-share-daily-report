@@ -76,7 +76,16 @@ if not is_trade_day("2026-03-28"):
 │  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   │
 │  │  数据采集模块  │   │  分析模块     │   │  报告生成模块  │   │
 │  │  DataFetcher │   │  Analyzer    │   │  Renderer    │   │
+│  │  (并行拉取)  │   │  (ATR/Kelly) │   │  (预测复盘)  │   │
 │  └──────────────┘   └──────────────┘   └──────────────┘   │
+│         │                    │                                  │
+│         ▼                    ▼                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │         预测存储 (PredictionStore)                       │  │
+│  │  - save_morning_prediction()  早报快照                 │  │
+│  │  - load_morning_prediction()  晚报加载                 │  │
+│  │  - compare_predictions()      命中率计算               │  │
+│  └──────────────────────────────────────────────────────────┘  │
 │                              │                                  │
 │                              ▼                                  │
 │  ┌──────────────────────────────────────────────────────────┐  │
@@ -107,6 +116,10 @@ if not is_trade_day("2026-03-28"):
 │  │  报告输出    │  │  数据缓存     │  │  日志文件     │      │
 │  │  Markdown    │  │  cache/       │  │  logs/        │      │
 │  └──────────────┘  └──────────────┘  └──────────────┘      │
+│  ┌──────────────┐  ┌──────────────┐                          │
+│  │  预测快照    │  │  审计日志     │                          │
+│  │  predictions/│  │  audit.jsonl  │                          │
+│  └──────────────┘  └──────────────┘                          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -122,34 +135,39 @@ skills/a-share-daily-report/
 ├── INTERFACE.md          # 接口设计文档
 ├── TODO.md               # 执行计划TODO
 ├── TESTING.md            # 测试方案
+├── requirements.txt      # 依赖锁定（19 个包）
 ├── config/               # 配置文件目录
-│   ├── config.yaml       # 主配置文件
+│   ├── config.yaml       # 主配置文件（含 Kelly、dry_run 等）
 │   └── watchlist.yaml    # 自选股配置
 ├── scripts/              # 脚本目录
 │   ├── __init__.py
-│   ├── generate_report.py     # 主入口脚本
+│   ├── generate_report.py     # 主入口脚本（审计日志、性能监控）
 │   ├── data_fetcher.py        # 数据采集统一入口（组合各 fetcher）
-│   ├── data_collectors.py     # 早/晚报采集器（BaseDataCollector 复用）
+│   ├── data_collectors.py     # 早/晚报采集器（BaseDataCollector 复用，并行拉取）
 │   ├── fetchers/              # 分源采集子模块
 │   │   ├── index_fetcher.py
 │   │   ├── sentiment_fetcher.py
 │   │   ├── money_fetcher.py
 │   │   ├── international_fetcher.py
 │   │   ├── news_fetcher.py
-│   │   └── sector_fetcher.py
+│   │   ├── sector_fetcher.py
+│   │   ├── margin_fetcher.py        # 融资融券数据
+│   │   └── block_trade_fetcher.py   # 大宗交易 TOP10
 │   ├── providers/             # provider 适配层（mx 等）
-│   ├── analyzer.py            # 分析模块
+│   ├── analyzer.py            # 分析模块（ATR、Kelly、RSI）
 │   ├── renderer.py            # 渲染统一入口
 │   ├── morning_renderer.py    # 早报渲染
-│   ├── evening_renderer.py    # 晚报渲染
+│   ├── evening_renderer.py    # 晚报渲染（含预测复盘）
 │   ├── template_engine.py     # Jinja2 模板引擎
 │   ├── templates/             # 模板目录（.j2）
-│   ├── publisher.py           # 发布模块（飞书/PDF）
+│   ├── publisher.py           # 发布模块（飞书/PDF，支持 dry_run）
+│   ├── prediction_store.py    # 早报预测快照存储（早晚报闭环）
 │   ├── pdf_converter.py       # PDF 策略接口与实现
 │   ├── models.py              # dataclass 统一模型
-│   ├── errors.py              # 自定义异常
+│   ├── schemas.py             # Pydantic V2 数据验证
 │   ├── config_validator.py    # 启动配置校验
-│   ├── trade_calendar.py      # 交易日历（复用akshare技能）
+│   ├── trade_calendar.py      # 交易日历（含节假日，时区感知）
+│   ├── errors.py              # 自定义异常
 │   └── utils/                 # 工具函数
 │       ├── __init__.py
 │       ├── cache.py           # 缓存工具
@@ -157,16 +175,19 @@ skills/a-share-daily-report/
 │       ├── observability.py   # 耗时监控（Prometheus/StatsD）
 │       ├── trace.py           # trace_id 上下文传播
 │       ├── network.py         # 网络重试与超时（支持上下文透传）
-│       └── helpers.py         # 辅助函数
+│       └── helpers.py         # 辅助函数（cn_today/cn_now 时区函数）
 ├── cache/                # 数据缓存目录（gitignore）
 │   ├── akshare/
 │   ├── tushare/
 │   └── sina/
 ├── logs/                 # 日志目录（gitignore）
-│   └── report_generator.log
+│   ├── report_generator.log
+│   └── audit.jsonl              # 审计日志（按行 JSON）
 ├── reports/              # 报告输出目录
 │   ├── morning/
-│   └── evening/
+│   ├── evening/
+│   ├── predictions/             # 早报预测快照（YYYYMMDD.json）
+│   └── pdf/
 └── tests/                # 测试目录
     ├── __init__.py
     ├── test_data_fetcher.py
@@ -235,7 +256,7 @@ class ReportGenerator:
 ---
 
 ### 2. DataFetcher（数据采集模块）
-**职责**：从各数据源采集原始数据，处理降级逻辑
+**职责**：从各数据源采集原始数据，处理降级逻辑，支持并行拉取
 
 **主要方法**：
 ```python
@@ -244,49 +265,58 @@ class DataFetcher:
         self.config = config
 
     # ===== A股数据 =====
-    def get_index_data(self, index_code: str, date: str) -&gt; dict:
-        """获取指数数据（优先级：akshare &gt; tushare &gt; mx-data）"""
+    def get_index_data(self, index_code: str, date: str) -> dict:
+        """获取指数数据（优先级：akshare > tushare > mx-data）"""
         pass
 
-    def get_market_sentiment(self, date: str) -&gt; dict:
+    def get_market_sentiment(self, date: str) -> dict:
         """获取市场情绪数据（涨跌停、炸板率等）"""
         pass
 
-    def get_money_flow(self, date: str) -&gt; dict:
+    def get_money_flow(self, date: str) -> dict:
         """获取资金流向数据（北向、主力）"""
         pass
 
-    def get_sector_data(self, date: str) -&gt; dict:
+    def get_sector_data(self, date: str) -> dict:
         """获取板块数据"""
         pass
 
-    def get_longhubang(self, date: str) -&gt; dict:
+    def get_longhubang(self, date: str) -> dict:
         """获取龙虎榜数据"""
         pass
 
+    # ===== 新增数据源 =====
+    def get_margin_data(self, trade_date: str = None) -> dict:
+        """获取融资融券数据（融资余额、买入额等）"""
+        pass
+
+    def get_block_trades(self, trade_date: str = None) -> dict:
+        """获取大宗交易数据（TOP10）"""
+        pass
+
     # ===== 国际盘面 =====
-    def get_us_market(self) -&gt; dict:
+    def get_us_market(self) -> dict:
         """获取美股数据（新浪财经API）"""
         pass
 
-    def get_hk_market(self) -&gt; dict:
+    def get_hk_market(self) -> dict:
         """获取港股数据"""
         pass
 
-    def get_commodities(self) -&gt; dict:
+    def get_commodities(self) -> dict:
         """获取大宗商品数据（原油、黄金、铜）"""
         pass
 
-    def get_forex(self) -&gt; dict:
+    def get_forex(self) -> dict:
         """获取外汇数据（美元指数、人民币汇率）"""
         pass
 
-    def get_index_futures(self) -&gt; dict:
+    def get_index_futures(self) -> dict:
         """获取期指数据（A50、沪深300）"""
         pass
 
     # ===== 新闻 =====
-    def get_news(self, date: str, limit: int = 10) -&gt; list:
+    def get_news(self, date: str, limit: int = 10) -> list:
         """获取财经新闻"""
         pass
 ```
@@ -294,7 +324,7 @@ class DataFetcher:
 ---
 
 ### 3. Analyzer（分析模块）
-**职责**：对原始数据进行分析，生成有价值的洞察
+**职责**：对原始数据进行分析，生成有价值的洞察，支持 ATR 波动率、Kelly 公式等高级分析
 
 **主要方法**：
 ```python
@@ -304,43 +334,61 @@ class Analyzer:
         self.watchlist = load_watchlist(config['watchlist_path'])
 
     # ===== 30秒总览分析 =====
-    def generate_summary(self, data: dict, mode: str) -&gt; dict:
+    def generate_summary(self, data: dict, mode: str) -> dict:
         """生成30秒总览"""
         pass
 
     # ===== 自选股分析 =====
-    def analyze_watchlist_morning(self, data: dict) -&gt; list:
-        """早报：自选股简洁预测"""
+    def analyze_watchlist_morning(self, data: dict) -> list:
+        """早报：自选股简洁预测（含 ATR 波动率）"""
         pass
 
-    def analyze_watchlist_evening(self, data: dict) -&gt; dict:
-        """晚报：自选股复盘"""
+    def analyze_watchlist_evening(self, data: dict) -> dict:
+        """晚报：自选股复盘（含真实 RSI(14)、5 日支撑/阻力）"""
         pass
 
     # ===== 核心决策分析 =====
-    def generate_trading_strategy(self, data: dict) -&gt; dict:
+    def generate_trading_strategy(self, data: dict) -> dict:
         """生成交易策略（进攻/防守/观望）"""
         pass
 
-    def analyze_focus_stocks(self, data: dict) -&gt; list:
+    def analyze_focus_stocks(self, data: dict) -> list:
         """分析今日关注标的"""
         pass
 
-    def suggest_position(self, data: dict) -&gt; dict:
-        """建议仓位"""
+    def suggest_position(self, data: dict) -> dict:
+        """建议仓位（Kelly 公式，支持配置化参数）"""
+        pass
+
+    # ===== 高级分析方法 =====
+    def _get_volatility(self, history: pd.DataFrame) -> float:
+        """计算 5 日 ATR 真实波动率"""
+        pass
+
+    def _calculate_kelly_position(
+        self,
+        sentiment_score: float,
+        volatility: float,
+        max_drawdown: float = 0.3
+    ) -> dict:
+        """计算凯利仓位（支持最大回撤折减）"""
+        pass
+
+    def analyze_technical_analysis(self, data: dict) -> dict:
+        """技术面分析（真实 RSI(14)、5 日支撑/阻力）"""
         pass
 
     # ===== 市场分析 =====
-    def analyze_market_sentiment(self, data: dict) -&gt; dict:
+    def analyze_market_sentiment(self, data: dict) -> dict:
         """分析市场情绪"""
         pass
 
-    def analyze_international_impact(self, data: dict) -&gt; list:
+    def analyze_international_impact(self, data: dict) -> list:
         """分析国际盘面关联影响"""
         pass
 
     # ===== 新闻分级 =====
-    def classify_news(self, news_list: list) -&gt; list:
+    def classify_news(self, news_list: list) -> list:
         """新闻重要性分级（🔴🟡🟢）"""
         pass
 ```
@@ -392,8 +440,67 @@ class Renderer:
 
 ---
 
-### 5. Publisher（发布模块）
-**职责**：创建飞书文档、转换PDF、发送飞书消息
+### 5. PredictionStore（预测存储模块）
+**职责**：早晚报闭环，早报保存预测快照，晚报复盘对比
+
+**主要方法**：
+```python
+class PredictionStore:
+    def save_morning_prediction(dt, watchlist_morning: list, position: dict) -> None:
+        """早报生成后调用：把自选股预测和仓位建议持久化"""
+        pass
+
+    def load_morning_prediction(dt) -> Optional[dict]:
+        """晚报生成时调用：读取同日早报预测快照"""
+        pass
+
+    def compare_predictions(morning_pred: dict, watchlist_actual: list) -> dict:
+        """对比早报预测与晚报实际表现，生成复盘结果"""
+        pass
+```
+
+**数据格式**：
+- 存储路径：`reports/predictions/YYYYMMDD.json`
+- 内容结构：
+  ```json
+  {
+    "date": "2026-04-07",
+    "watchlist": [
+      {"code": "600519.SH", "name": "贵州茅台", "view": "看涨", "reason": "...", "change_pct": 0.5, "price": 1700.0},
+      ...
+    ],
+    "position": {
+      "position_min": 60,
+      "position_max": 80,
+      "logic": "情绪分 75 + 波动率 10 → 建议仓位 70%"
+    }
+  }
+  ```
+
+**对比结果**：
+```python
+{
+    "summary_line": "早报预测命中率 75%（3/4），预测质量良好",
+    "hit_rate": 0.75,
+    "details": [
+        {
+            "code": "600519.SH",
+            "name": "贵州茅台",
+            "pred_view": "看涨",
+            "actual_pct": 1.2,
+            "hit": true,
+            "miss_reason": ""
+        },
+        ...
+    ],
+    "position_review": "早报建议仓位 60%-80%"
+}
+```
+
+---
+
+### 6. Publisher（发布模块）
+**职责**：创建飞书文档、转换PDF、发送飞书消息，支持 dry_run 模式
 
 **主要方法**：
 ```python
@@ -401,23 +508,29 @@ class Publisher:
     def __init__(self, config: dict):
         self.config = config
         self.feishu_config = load_feishu_config(config)
+        self.dry_run = config.get('publish', {}).get('dry_run', False)
 
-    def publish_report(self, markdown_content: str, mode: str, date: str) -&gt; dict:
-        """完整发布流程：创建飞书文档 → 转换PDF → 发送消息"""
+    def publish_report(self, markdown_content: str, mode: str, date: str) -> dict:
+        """完整发布流程：创建飞书文档 → 转换PDF → 发送消息（支持 dry_run）"""
         pass
 
-    def create_feishu_doc(self, markdown_content: str, title: str) -&gt; str:
+    def create_feishu_doc(self, markdown_content: str, title: str) -> str:
         """创建飞书文档，返回文档链接"""
         pass
 
-    def convert_to_pdf(self, markdown_content: str, output_path: str) -&gt; str:
+    def convert_to_pdf(self, markdown_content: str, output_path: str) -> str:
         """Markdown转PDF，返回PDF文件路径"""
         pass
 
-    def send_feishu_message(self, doc_url: str, pdf_path: str, mode: str, date: str) -&gt; bool:
+    def send_feishu_message(self, doc_url: str, pdf_path: str, mode: str, date: str) -> bool:
         """发送飞书消息到指定对话"""
         pass
 ```
+
+**Dry-run 模式**：
+- 配置方式：`publish.dry_run: true` 或环境变量 `A_SHARE_DRY_RUN=1`
+- 行为：跳过真实的飞书发布操作，仅记录日志
+- 适用场景：测试、开发环境、预览报告
 
 ---
 
@@ -426,53 +539,68 @@ class Publisher:
 ### 早报预测版数据流
 ```
 1. 确定交易日期
-   ├─ 检查今天是否为交易日
+   ├─ 检查今天是否为交易日（时区感知 UTC+8）
    └─ 非交易日 → 使用最近一个收盘日
 
-2. 采集数据
+2. 采集数据（并行拉取）
    ├─ A股昨日数据（指数、情绪、资金、板块）
    ├─ 昨夜今晨数据（美股、中概、商品、外汇、期指）
    └─ 国内要闻（10篇）
 
 3. 分析数据
    ├─ 生成30秒总览
-   ├─ 自选股简洁预测
+   ├─ 自选股简洁预测（ATR 波动率、Kelly 公式）
    ├─ 核心决策（策略、关注、仓位）
    └─ 国际盘面关联影响
 
-4. 渲染报告
+4. 保存预测快照（新增）
+   └─ PredictionStore.save_morning_prediction()
+
+5. 渲染报告
    └─ 生成Markdown格式早报
 
-5. 保存输出
+6. 保存输出
    └─ reports/morning/A股早报-YYYYMMDD.md
+
+7. 可选：发布到飞书
+   ├─ 创建飞书文档
+   ├─ 转换PDF（可选）
+   └─ 发送飞书消息（支持 dry_run 模式）
 ```
 
 ### 晚报复盘版数据流
 ```
 1. 确定交易日期
-   └─ 使用今天（交易日）
+   └─ 使用今天（交易日，时区感知 UTC+8）
 
-2. 采集数据
+2. 采集数据（并行拉取）
    ├─ A股今日数据（指数、情绪、资金、板块、龙虎榜）
+   ├─ 融资融券数据（新增）
+   ├─ 大宗交易 TOP10（新增）
    ├─ 港股今日数据
    └─ 今日要闻（10篇）
 
 3. 分析数据
    ├─ 生成30秒总览
-   ├─ 自选股复盘
+   ├─ 自选股复盘（真实 RSI(14)、5 日支撑/阻力）
    ├─ 市场深度分析
    └─ 新闻重要性分级
 
-4. 渲染报告
-   └─ 生成Markdown格式晚报
+4. 预测复盘（新增）
+   ├─ PredictionStore.load_morning_prediction()
+   ├─ PredictionStore.compare_predictions()
+   └─ 生成命中率统计与每股对比
 
-5. 保存输出
+5. 渲染报告
+   └─ 生成Markdown格式晚报（含预测复盘章节）
+
+6. 保存输出
    └─ reports/evening/A股晚报-YYYYMMDD.md
 
-6. 发布流程（新增）
+7. 可选：发布到飞书
    ├─ 创建飞书文档
-   ├─ 转换PDF文件
-   └─ 发送飞书消息（文档链接+PDF）
+   ├─ 转换PDF（可选）
+   └─ 发送飞书消息（支持 dry_run 模式）
 ```
 
 ---

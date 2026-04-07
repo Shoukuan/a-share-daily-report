@@ -30,6 +30,7 @@ from utils import (
     safe_int,
     load_project_env,
     post_json_with_retry,
+    cn_now,
 )
 from schemas import NewsItemSchema, validate_many
 
@@ -137,7 +138,7 @@ class NewsFetcherMixin:
                     content=content[:300],
                     source=source,
                     url=item.get('jumpUrl', ''),
-                    publish_time=date if date else format_date(datetime.now(), '%Y-%m-%d %H:%M:%S'),
+                    publish_time=date if date else format_date(cn_now(), '%Y-%m-%d %H:%M:%S'),
                     importance="high" if secu_list else "medium",
                     related_sectors=[],
                     related_stocks=related_stocks[:3],

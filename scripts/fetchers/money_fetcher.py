@@ -30,6 +30,7 @@ from utils import (
     safe_int,
     load_project_env,
     post_json_with_retry,
+    cn_now,
 )
 from schemas import MoneyFlowSchema, validate_schema
 
@@ -181,7 +182,7 @@ class MoneyFetcherMixin:
                     outflow_top5.reverse()
 
                     data = {
-                        "update_time": format_date(datetime.now()),
+                        "update_time": format_date(cn_now()),
                         "total_industries": len(df),
                         "top_net_inflow": inflow_top5,
                         "top_net_outflow": outflow_top5
@@ -224,7 +225,7 @@ class MoneyFetcherMixin:
             raw = self._mx_query_json(query, TIMEOUTS['mx_industry_flow_sec'])
             data = self.mx_provider.parse_industry_fund_flow(
                 raw=raw,
-                update_time=format_date(datetime.now()),
+                update_time=format_date(cn_now()),
             )
 
             return {"success": True, "data": data, "source": "mx-data", "cached": False}

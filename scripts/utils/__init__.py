@@ -15,7 +15,9 @@ from .helpers import (
     format_number,
     format_percent,
     safe_float,
-    safe_int
+    safe_int,
+    cn_today,
+    cn_now,
 )
 from .circuit_breaker import circuit_breaker, CircuitBreaker, CircuitBreakerManager
 
@@ -42,6 +44,8 @@ __all__ = [
     'format_percent',
     'safe_float',
     'safe_int',
+    'cn_today',
+    'cn_now',
     'circuit_breaker',
     'CircuitBreaker',
     'CircuitBreakerManager',

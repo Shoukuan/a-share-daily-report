@@ -30,6 +30,7 @@ from utils import (
     safe_int,
     load_project_env,
     post_json_with_retry,
+    cn_now,
 )
 
 logger = get_logger('data_fetcher')
@@ -111,7 +112,7 @@ class InternationalFetcherMixin:
                     continue
 
             result = {
-                "update_time": format_date(datetime.now(), '%Y-%m-%d %H:%M:%S'),
+                "update_time": format_date(cn_now(), '%Y-%m-%d %H:%M:%S'),
                 "indices": indices_data,
                 "chinadotcom": cdc_data
             }
@@ -150,7 +151,7 @@ class InternationalFetcherMixin:
 
         # 初始化结果结构
         futures_data = {
-            "update_time": format_date(datetime.now(), '%Y-%m-%d %H:%M:%S'),
+            "update_time": format_date(cn_now(), '%Y-%m-%d %H:%M:%S'),
             "futures": {}
         }
         sources = []
@@ -272,7 +273,7 @@ class InternationalFetcherMixin:
         判断当前是否在 A 股交易时间内（9:25-15:05，周一到周五）
         仅在交易时间内才使用 mx-data 实时行情，避免返回昨日数据
         """
-        now = datetime.now()
+        now = cn_now()
         if now.weekday() >= 5:  # 周六/周日
             return False
         t = now.hour * 100 + now.minute
@@ -335,12 +336,12 @@ class InternationalFetcherMixin:
             logger.warning(f"解析 mx-data 期指响应失败: {e}")
             import traceback
             logger.debug(traceback.format_exc())
-            return None if target_key else {"update_time": format_date(datetime.now(), '%Y-%m-%d %H:%M:%S'), "futures": {}}
+            return None if target_key else {"update_time": format_date(cn_now(), '%Y-%m-%d %H:%M:%S'), "futures": {}}
 
         if target_key and not futures_data:
             return None
 
-        futures_data['update_time'] = format_date(datetime.now(), '%Y-%m-%d %H:%M:%S')
+        futures_data['update_time'] = format_date(cn_now(), '%Y-%m-%d %H:%M:%S')
         return futures_data
 
     def _generate_impact_text(self, change_pct, name):
@@ -361,7 +362,7 @@ class InternationalFetcherMixin:
         缓存 ttl=6h（早报生成后半天有效）
         """
         if dt is None:
-            dt = datetime.now()
+            dt = cn_now()
         date_str = format_date(dt, '%Y-%m-%d')
         cache_key = f'international_events_{date_str}'
         cached = get_cache(cache_key, namespace='tavily', ttl=21600)

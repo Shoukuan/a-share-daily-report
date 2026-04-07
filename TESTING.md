@@ -105,7 +105,7 @@ class TestDataFetcher:
         """测试获取新闻数据"""
         result = fetcher.get_news("2026-03-27", limit=10)
         assert result["success"] is True
-        assert len(result["data"]) &lt;= 10
+        assert len(result["data"]) <= 10
 ```
 
 ### 2. Analyzer 测试
@@ -163,7 +163,15 @@ class TestAnalyzer:
         result = analyzer.generate_trading_strategy(sample_data)
         assert result["success"] is True
         assert result["data"]["strategy"] in ["offensive", "defensive", "waiting"]
-        assert 0 &lt;= result["data"]["confidence"] &lt;= 1
+        assert 0 <= result["data"]["confidence"] <= 1
+
+    def test_calculate_kelly_position(self, analyzer):
+        """测试 Kelly 公式仓位计算"""
+        result = analyzer._calculate_kelly_position(sentiment_score=75, volatility=10)
+        assert "position_min" in result
+        assert "position_max" in result
+        assert 0 <= result["position_min"] <= 100
+        assert 0 <= result["position_max"] <= 100
 
     def test_classify_news(self, analyzer):
         """测试新闻重要性分级"""
@@ -176,6 +184,55 @@ class TestAnalyzer:
         assert result["success"] is True
         for news in result["data"]:
             assert news["importance"] in ["high", "medium", "low"]
+```
+
+### 3. PredictionStore 测试（新增）
+
+```python
+# tests/test_prediction_store.py
+import pytest
+import os
+from datetime import datetime
+from scripts.prediction_store import save_morning_prediction, load_morning_prediction, compare_predictions
+
+class TestPredictionStore:
+    def test_save_and_load_prediction(self, tmp_path):
+        """测试预测快照保存与加载"""
+        dt = datetime(2026, 4, 7)
+        watchlist_morning = [
+            {"code": "600519.SH", "name": "贵州茅台", "view": "看涨", "change_pct": 0.5, "price": 1700.0}
+        ]
+        position = {"position_min": 60, "position_max": 80, "logic": "测试逻辑"}
+
+        # 保存
+        save_morning_prediction(dt, watchlist_morning, position)
+
+        # 加载
+        loaded = load_morning_prediction(dt)
+        assert loaded is not None
+        assert loaded["date"] == "2026-04-07"
+        assert len(loaded["watchlist"]) == 1
+        assert loaded["watchlist"][0]["code"] == "600519.SH"
+        assert loaded["position"]["position_min"] == 60
+
+    def test_compare_predictions(self):
+        """测试预测对比"""
+        morning_pred = {
+            "watchlist": [
+                {"code": "600519.SH", "name": "贵州茅台", "view": "看涨"}
+            ],
+            "position": {"position_min": 60, "position_max": 80}
+        }
+        watchlist_actual = [
+            {"code": "600519.SH", "name": "贵州茅台", "change_pct": 1.2}
+        ]
+
+        result = compare_predictions(morning_pred, watchlist_actual)
+        assert result["summary_line"] is not None
+        assert result["hit_rate"] is not None
+        assert len(result["details"]) == 1
+        assert result["details"][0]["hit"] is True
+        assert "position_review" in result
 ```
 
 ### 3. Renderer 测试

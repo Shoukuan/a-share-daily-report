@@ -5,7 +5,7 @@
 
 from datetime import datetime, date, timedelta
 
-from utils.helpers import parse_date
+from utils.helpers import parse_date, cn_today
 
 # 中国A股法定节假日（手动维护，每年更新）
 # 格式: 'YYYY-MM-DD'
@@ -26,6 +26,7 @@ HOLIDAYS = {
     '2026-04-05', '2026-04-06', '2026-04-07',  # 清明
     '2026-05-01', '2026-05-02', '2026-05-03', '2026-05-04', '2026-05-05',  # 劳动节
     '2026-06-19', '2026-06-20', '2026-06-21',  # 端午
+    '2026-09-25', '2026-09-26', '2026-09-27',  # 中秋节
     '2026-10-01', '2026-10-02', '2026-10-03',
     '2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07',  # 国庆
 }
@@ -43,7 +44,7 @@ def _is_holiday(dt: date) -> bool:
 def is_trade_day(dt=None):
     """判断是否为交易日（非周末 + 非法定节假日）"""
     if dt is None:
-        dt = date.today()
+        dt = cn_today()
     elif isinstance(dt, str):
         dt = parse_date(dt)
         if dt is None:
@@ -56,11 +57,11 @@ def is_trade_day(dt=None):
 def prev_trade_day(dt=None):
     """获取前一个交易日"""
     if dt is None:
-        dt = date.today()
+        dt = cn_today()
     elif isinstance(dt, str):
         dt = parse_date(dt)
         if dt is None:
-            dt = date.today()
+            dt = cn_today()
     if isinstance(dt, datetime):
         dt = dt.date()
     check_date = dt - timedelta(days=1)
@@ -72,11 +73,11 @@ def prev_trade_day(dt=None):
 def next_trade_day(dt=None):
     """获取下一个交易日"""
     if dt is None:
-        dt = date.today()
+        dt = cn_today()
     elif isinstance(dt, str):
         dt = parse_date(dt)
         if dt is None:
-            dt = date.today()
+            dt = cn_today()
     if isinstance(dt, datetime):
         dt = dt.date()
     check_date = dt + timedelta(days=1)
@@ -88,11 +89,11 @@ def next_trade_day(dt=None):
 def get_effective_date(dt=None, mode='morning'):
     """获取有效报告日期"""
     if dt is None:
-        dt = date.today()
+        dt = cn_today()
     elif isinstance(dt, str):
         dt = parse_date(dt)
         if dt is None:
-            dt = date.today()
+            dt = cn_today()
     if isinstance(dt, datetime):
         dt = dt.date()
     if not is_trade_day(dt):

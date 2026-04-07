@@ -18,6 +18,11 @@
 - 🔥 **主题追踪** — 算力、半导体、新能源等热门板块实时表现
 - 📰 **新闻分级** — 红/黄/绿三级重要性自动分类
 - 🌍 **全球联动** — 美股、期指、美元、黄金、原油一站式
+- 🔮 **预测复盘** — 早报预测 vs 晚报实际，命中率统计（预测闭环）
+- ⚡ **并行拉取** — 多源数据并行采集，报告生成速度提升 50%
+- 📉 **高级分析** — ATR 波动率、真实 RSI(14)、5 日支撑/阻力位
+- 💰 **深度资金** — 融资融券、大宗交易 TOP10 数据
+- 📝 **审计日志** — 完整操作记录与阶段耗时追踪
 
 ---
 
@@ -106,6 +111,8 @@ python scripts/generate_report.py --mode morning --date 2026-04-05
 | 美股行情 | yfinance | Mock |
 | 期指 (A50/沪深300) | mx-data API | Mock |
 | 财经新闻 | mx-search API | Mock |
+| 融资融券 | akshare | Mock |
+| 大宗交易 | akshare | Mock |
 
 > 无需付费 API 也能运行 — 仅使用 akshare + yfinance 免费源即可生成基础报告。
 
@@ -116,33 +123,51 @@ python scripts/generate_report.py --mode morning --date 2026-04-05
 ```
 a-share-daily-report/
 ├── config/
-│   ├── config.yaml              # 主配置文件
+│   ├── config.yaml              # 主配置文件（含 Kelly 公式参数、dry_run 等）
 │   └── watchlist.yaml           # 自选股列表
 ├── scripts/
-│   ├── generate_report.py       # 主入口
+│   ├── generate_report.py       # 主入口（支持审计日志、性能监控）
 │   ├── data_fetcher.py          # 数据采集统一入口（组合各 fetcher）
-│   ├── data_collectors.py       # 早/晚报采集器（基类复用）
+│   ├── data_collectors.py       # 早/晚报采集器（并行拉取，ThreadPoolExecutor）
 │   ├── fetchers/                # 分源采集模块
 │   │   ├── index_fetcher.py
 │   │   ├── sentiment_fetcher.py
 │   │   ├── money_fetcher.py
 │   │   ├── international_fetcher.py
 │   │   ├── news_fetcher.py
-│   │   └── sector_fetcher.py
+│   │   ├── sector_fetcher.py
+│   │   ├── margin_fetcher.py    # 融资融券数据
+│   │   └── block_trade_fetcher.py  # 大宗交易 TOP10
 │   ├── providers/               # 外部 provider 解析（如 mx provider）
-│   ├── analyzer.py              # 分析引擎（策略/仓位/主题）
+│   ├── analyzer.py              # 分析引擎（策略/仓位/主题/技术面）
 │   ├── renderer.py              # 渲染统一入口
 │   ├── morning_renderer.py      # 早报渲染
-│   ├── evening_renderer.py      # 晚报渲染
+│   ├── evening_renderer.py      # 晚报渲染（含预测复盘）
 │   ├── template_engine.py       # Jinja2 模板引擎
 │   ├── templates/               # Jinja2 模板目录
-│   ├── publisher.py             # 飞书文档发布 + 消息通知
+│   ├── publisher.py             # 飞书文档发布 + 消息通知（支持 dry_run）
 │   ├── pdf_converter.py         # PDF 策略模式（fpdf2/weasyprint/wkhtmltopdf）
+│   ├── prediction_store.py      # 早报预测快照存储（早晚报闭环）
 │   ├── models.py                # dataclass 数据模型
-│   ├── trade_calendar.py        # 交易日历判
+│   ├── schemas.py               # Pydantic V2 数据验证
+│   ├── config_validator.py      # AppConfig 配置校验
+│   ├── trade_calendar.py        # 交易日历判（含节假日）
 │   └── utils/                   # 缓存/日志/观测/trace/工具
+│       ├── cache.py
+│       ├── logger.py
+│       ├── observability.py
+│       ├── trace.py
+│       ├── network.py
+│       └── helpers.py           # cn_today() / cn_now() UTC+8 时区函数
 ├── tests/                       # 单元测试 + 集成测试
 ├── reports/                     # 生成的报告（自动创建）
+│   ├── morning/
+│   ├── evening/
+│   ├── predictions/             # 早报预测快照（YYYYMMDD.json）
+│   └── pdf/
+├── logs/                        # 日志目录（gitignore）
+│   └── audit.jsonl              # 审计日志（按行 JSON）
+├── requirements.txt             # 依赖锁定（19 个包）
 └── README.md
 ```
 
@@ -180,6 +205,28 @@ export FEISHU_NOTIFY_OPEN_ID=ou_xxxxxxxx
 - 自定义报告输出路径
 - 飞书文档文件夹 Token
 - 缓存 TTL 控制
+- **Kelly 公式参数配置**（`analysis.kelly` 节：win_rate、risk_reward_ratio、half_kelly）
+- **Dry-run 模式**（`publish.dry_run: true` 或环境变量 `A_SHARE_DRY_RUN=1`）
+
+#### Kelly 公式配置示例
+```yaml
+analysis:
+  kelly:
+    win_rate: 0.5              # 策略胜率（建议通过回测校准）
+    risk_reward_ratio: 2.0      # 盈亏比（1:2 止损止盈）
+    half_kelly: false           # 是否使用半凯利（更保守）
+```
+
+#### Dry-run 模式示例
+```bash
+# 环境变量方式
+export A_SHARE_DRY_RUN=1
+python scripts/generate_report.py --mode morning
+
+# 或修改 config.yaml
+publish:
+  dry_run: true    # 跳过真实的飞书发布，仅记录日志
+```
 
 ### 可观测性（新增）
 

@@ -12,6 +12,7 @@ import os
 from datetime import datetime
 
 from utils import (
+    cn_now,
     ensure_trace_id,
     format_date,
     get_logger,
@@ -32,11 +33,19 @@ class Publisher:
         self._feishu_create_doc = None
         self._feishu_im_user_message = None
 
-        self.in_openclaw = self._detect_openclaw()
+        # dry_run: 强制使用模拟实现，即使在 OpenClaw 环境中也不发送真实请求
+        # 优先级: 环境变量 > 配置文件
+        self.dry_run = (
+            os.environ.get('A_SHARE_DRY_RUN', '').lower() in ('1', 'true', 'yes')
+            or bool(self.publish_config.get('dry_run', False))
+        )
+
+        self.in_openclaw = (not self.dry_run) and self._detect_openclaw()
         if self.in_openclaw:
             self._load_openclaw_tools()
 
-        logger.info(f"Publisher 初始化完成（环境: {'OpenClaw' if self.in_openclaw else '开发/模拟'}）")
+        env_label = 'dry_run(模拟)' if self.dry_run else ('OpenClaw' if self.in_openclaw else '开发/模拟')
+        logger.info(f"Publisher 初始化完成（环境: {env_label}）")
 
     def _detect_openclaw(self):
         """检测是否在 OpenClaw 环境中运行"""
@@ -81,7 +90,7 @@ class Publisher:
                 'doc_id': doc_id,
                 'doc_url': doc_url,
                 'title': title,
-                'published_at': format_date(datetime.now(), '%Y-%m-%d %H:%M:%S'),
+                'published_at': format_date(cn_now(), '%Y-%m-%d %H:%M:%S'),
             }
 
             if send_notification:
@@ -98,6 +107,9 @@ class Publisher:
 
     def _create_document(self, title, markdown_content):
         """创建飞书文档（根据环境选择实现）"""
+        if self.dry_run:
+            logger.info("🔒 dry_run 模式：跳过真实文档创建")
+            return self._create_document_mock(title, markdown_content)
         if self.in_openclaw:
             return self._create_document_real(title, markdown_content)
         return self._create_document_mock(title, markdown_content)
@@ -124,7 +136,7 @@ class Publisher:
 
     def _create_document_mock(self, title, markdown_content):
         """模拟创建文档（开发阶段）"""
-        mock_id = f"doxcn_mock_{format_date(datetime.now(), '%Y%m%d%H%M%S')}"
+        mock_id = f"doxcn_mock_{format_date(cn_now(), '%Y%m%d%H%M%S')}"
         mock_url = f"https://example.feishu.cn/docx/{mock_id}"
         logger.info(f"  模拟文档ID: {mock_id}")
         logger.info(f"  模拟文档链接: {mock_url}")
@@ -137,6 +149,9 @@ class Publisher:
             logger.warning("⚠️ 未配置 user_open_id，跳过消息发送")
             return {'success': False, 'error': '未配置用户ID'}
 
+        if self.dry_run:
+            logger.info("🔒 dry_run 模式：跳过真实消息发送")
+            return self._send_notification_mock(title, doc_url, report_date, mode, user_open_id)
         if self.in_openclaw:
             return self._send_notification_real(title, doc_url, report_date, mode, user_open_id)
         return self._send_notification_mock(title, doc_url, report_date, mode, user_open_id)
@@ -196,7 +211,7 @@ class Publisher:
         logger.info(f'   预览: {message_preview}')
         return {
             'success': True,
-            'message_id': f"mock_msg_{format_date(datetime.now(), '%Y%m%d%H%M%S')}",
+            'message_id': f"mock_msg_{format_date(cn_now(), '%Y%m%d%H%M%S')}",
         }
 
     def _parse_doc_result(self, result):

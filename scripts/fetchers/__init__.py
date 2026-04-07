@@ -7,6 +7,8 @@ from .money_fetcher import MoneyFetcherMixin
 from .international_fetcher import InternationalFetcherMixin
 from .news_fetcher import NewsFetcherMixin
 from .sector_fetcher import SectorFetcherMixin
+from .margin_fetcher import MarginFetcherMixin
+from .block_trade_fetcher import BlockTradeFetcherMixin
 
 __all__ = [
     "IndexFetcherMixin",
@@ -15,4 +17,6 @@ __all__ = [
     "InternationalFetcherMixin",
     "NewsFetcherMixin",
     "SectorFetcherMixin",
+    "MarginFetcherMixin",
+    "BlockTradeFetcherMixin",
 ]

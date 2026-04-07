@@ -14,6 +14,8 @@ from pathlib import Path
 script_dir = Path(__file__).parent
 sys.path.insert(0, str(script_dir))
 
+from utils.helpers import cn_today, cn_now
+
 try:
     from data_fetcher import DataFetcher
     from utils import get_logger, parse_date
@@ -57,7 +59,7 @@ def test_akshare_index():
     config = {"data_source": "akshare"}
     fetcher = DataFetcher(config)
 
-    test_date = date.today() - timedelta(days=1)  # 昨天（最近交易日）
+    test_date = cn_today() - timedelta(days=1)  # 昨天（最近交易日）
     result = fetcher.get_index_data('000001.SH', test_date)
 
     success = result.get('success', False)
@@ -94,7 +96,7 @@ def test_akshare_sectors():
     config = {"data_source": "akshare"}
     fetcher = DataFetcher(config)
 
-    test_date = date.today() - timedelta(days=1)
+    test_date = cn_today() - timedelta(days=1)
     result = fetcher.get_sector_data(test_date)
 
     success = result.get('success', False)
@@ -129,7 +131,7 @@ def test_akshare_lhb():
     config = {"data_source": "akshare"}
     fetcher = DataFetcher(config)
 
-    test_date = date.today() - timedelta(days=1)
+    test_date = cn_today() - timedelta(days=1)
     result = fetcher.get_lhb_data(test_date)
 
     success = result.get('success', False)
@@ -195,7 +197,7 @@ def test_mx_search():
     config = {"data_source": "mx-search", "news_limit": 5}
     fetcher = DataFetcher(config)
 
-    test_date = date.today() - timedelta(days=1)
+    test_date = cn_today() - timedelta(days=1)
     result = fetcher.get_news(test_date, limit=5)
 
     success = result.get('success', False)
@@ -264,8 +266,8 @@ def test_env_config():
 
 def main():
     print("🔍 A股日报生成器 - 数据源连通性验证")
-    print(f"⏰ 验证时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"📅 测试日期基准: {date.today()} (实际使用最近交易日)")
+    print(f"⏰ 验证时间: {cn_now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"📅 测试日期基准: {cn_today()} (实际使用最近交易日)")
 
     results = []
 

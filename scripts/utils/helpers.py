@@ -7,6 +7,21 @@
 from datetime import datetime, date
 import re
 
+# 中国A股市场时区（固定为 UTC+8，避免依赖 pytz）
+import datetime as _dt
+
+_CN_UTC_OFFSET = _dt.timezone(_dt.timedelta(hours=8))
+
+
+def cn_today() -> date:
+    """返回上海时区的当前日期（UTC+8），替代 date.today()"""
+    return datetime.now(_CN_UTC_OFFSET).date()
+
+
+def cn_now() -> datetime:
+    """返回上海时区的当前时间（UTC+8），替代 datetime.now()"""
+    return datetime.now(_CN_UTC_OFFSET)
+
 
 def format_date(dt, fmt='%Y-%m-%d'):
     if isinstance(dt, str):

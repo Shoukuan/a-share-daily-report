@@ -8,6 +8,7 @@ from datetime import datetime
 import math
 
 from constants import ALL_INDICES
+from utils.helpers import cn_now
 from models import (
     RenderIndexLine,
     RenderNewsLine,
@@ -44,10 +45,10 @@ class EveningRenderer:
 
     def render_evening_report(self, analysis_result, dt=None):
         if dt is None:
-            dt = datetime.now()
+            dt = cn_now()
 
         date_str = format_date(dt)
-        gen_time = format_date(datetime.now(), '%Y-%m-%d %H:%M')
+        gen_time = format_date(cn_now(), '%Y-%m-%d %H:%M')
 
         summary = analysis_result.get('summary')
         summary_data = summary.get('data', {}) if isinstance(summary, dict) else {}
@@ -91,6 +92,9 @@ class EveningRenderer:
             'style_analysis': comprehensive_data.get('style_analysis', '暂无结论'),
             'outlook': comprehensive_data.get('outlook', '暂无结论'),
             'missing_items': missing_items,
+            'prediction_review': self._build_prediction_review(analysis_result),
+            'sector_rotation': self._build_sector_rotation_rows(analysis_result),
+            'strategy_adjustment': analysis_result.get('strategy_adjustment', {}),
         }
         return render_template('evening_report.md.j2', **context)
 
@@ -175,14 +179,50 @@ class EveningRenderer:
             avg_score = self._safe_number(item.get('avg_score', 0), ndigits=1)
             signal = item.get('signal', '-')
             reason = item.get('reason', '-')
+            reason_category = item.get('reason_category', '-')
             rows.append(asdict(RenderWatchlistEveningRow(
                 name=name,
                 change_pct=change_pct,
                 avg_score=avg_score,
                 signal=signal,
                 reason=reason,
+                reason_category=reason_category,
             )))
         return rows
+
+    def _build_prediction_review(self, analysis_result):
+        """
+        构建早报预测复盘数据，供模板渲染。
+        返回 dict 或 None（无快照时）。
+        """
+        pred_review = analysis_result.get('prediction_review')
+        if not pred_review or not isinstance(pred_review, dict):
+            return None
+
+        details = pred_review.get('details', [])
+        hit_rate = pred_review.get('hit_rate')
+        hit_rate_str = f"{hit_rate:.0%}" if hit_rate is not None else '—'
+
+        # 构建每条对比行
+        rows = []
+        for d in details:
+            hit_icon = '✅' if d.get('hit') else '❌'
+            actual_pct = d.get('actual_pct', 0)
+            actual_str = self._safe_pct(actual_pct)
+            rows.append({
+                'name': d.get('name', ''),
+                'pred_view': d.get('pred_view', ''),
+                'actual_pct': actual_str,
+                'hit_icon': hit_icon,
+                'miss_reason': d.get('miss_reason', ''),
+            })
+
+        return {
+            'summary_line': pred_review.get('summary_line', ''),
+            'hit_rate_str': hit_rate_str,
+            'position_review': pred_review.get('position_review', ''),
+            'rows': rows,
+        }
 
     def _build_lhb_rows(self, analysis_result):
         lhb_wrapper = analysis_result.get('lhb', {})
@@ -220,3 +260,25 @@ class EveningRenderer:
                 summary=summary,
             )))
         return rows
+
+    def _build_sector_rotation_rows(self, analysis_result):
+        """
+        构建板块轮动数据，供模板渲染。
+        返回 dict 或 None（无数据时）。
+        """
+        sector_rotation_result = analysis_result.get('sector_rotation')
+        if not sector_rotation_result or not isinstance(sector_rotation_result, dict):
+            return None
+
+        data = sector_rotation_result.get('data')
+        if not data or not isinstance(data, dict):
+            return None
+
+        return {
+            'rotation_type': data.get('rotation_type', '-'),
+            'rotation_strength': data.get('rotation_strength', '-'),
+            'mainline_sector': data.get('mainline_sector', '-'),
+            'mainline_change': data.get('mainline_change', '-'),
+            'prev_mainline': data.get('prev_mainline', '-'),
+            'rotation_signal': data.get('rotation_signal', '-'),
+        }

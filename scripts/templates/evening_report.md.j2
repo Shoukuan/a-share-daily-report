@@ -45,14 +45,32 @@
 ---
 
 ## 📈 自选股复盘（自选股深度分析）
-| 股票 | 涨跌幅 | 评分 | 信号 | 理由 |
-|------|--------|------|------|------|
+| 股票 | 涨跌幅 | 评分 | 信号 | 理由 | 失利原因 |
+|------|--------|------|------|------|----------|
 {% if watchlist_rows %}
 {% for r in watchlist_rows %}
-| {{ r.name }} | {{ r.change_pct }} | {{ r.avg_score }} | {{ r.signal }} | {{ r.reason }} |
+| {{ r.name }} | {{ r.change_pct }} | {{ r.avg_score }} | {{ r.signal }} | {{ r.reason }} | {{ r.reason_category }} |
 {% endfor %}
 {% else %}
-| 暂无数据 | - | - | - | - |
+| 暂无数据 | - | - | - | - | - |
+{% endif %}
+
+---
+
+## 🔮 早报预测复盘
+
+{% if prediction_review %}
+> **{{ prediction_review.summary_line }}**（命中率 {{ prediction_review.hit_rate_str }}）
+
+{{ prediction_review.position_review }}
+
+| 股票 | 早报预判 | 今日实际 | 命中 | 备注 |
+|------|----------|----------|------|------|
+{% for r in prediction_review.rows %}
+| {{ r.name }} | {{ r.pred_view }} | {{ r.actual_pct }} | {{ r.hit_icon }} | {{ r.miss_reason }} |
+{% endfor %}
+{% else %}
+> 今日无早报预测快照（首次运行或早报未生成），明日将开始记录预测以供复盘。
 {% endif %}
 
 ---
@@ -101,6 +119,31 @@
 
 ### 💡 后市展望
 {{ outlook }}
+
+---
+
+## 🔄 板块轮动分析
+
+| 轮动类型 | 轮动强度 | 当前主线 | 主线变化 | 轮动信号 |
+|---------|---------|---------|---------|---------|
+{% if sector_rotation %}
+| {{ sector_rotation.rotation_type }} | {{ sector_rotation.rotation_strength }} | {{ sector_rotation.mainline_sector }} | {{ sector_rotation.mainline_change }} | {{ sector_rotation.rotation_signal }} |
+{% else %}
+| 数据暂缺 | - | - | - | - |
+{% endif %}
+
+---
+
+## 📋 明日策略调整
+
+{% if strategy_adjustment %}
+- **原策略**: {{ strategy_adjustment.original_strategy }}
+- **今日表现**: {{ strategy_adjustment.actual_performance }}
+- **调整建议**: {{ strategy_adjustment.new_strategy }}（{{ strategy_adjustment.adjustment_reason }}）
+- **仓位调整**: {{ strategy_adjustment.position_adjustment }}
+{% else %}
+数据不足，无法评估策略调整
+{% endif %}
 
 ---
 

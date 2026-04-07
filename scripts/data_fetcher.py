@@ -6,6 +6,7 @@
 
 import os
 import threading
+import time
 import urllib.request
 import requests
 import pandas as pd
@@ -30,6 +31,8 @@ from fetchers import (
     InternationalFetcherMixin,
     NewsFetcherMixin,
     SectorFetcherMixin,
+    MarginFetcherMixin,
+    BlockTradeFetcherMixin,
 )
 from models import IndexData, NewsItem, FuturesItem
 from utils import (
@@ -47,13 +50,13 @@ from utils import (
 
 logger = get_logger('data_fetcher')
 
-class DataFetcher(IndexFetcherMixin, SentimentFetcherMixin, MoneyFetcherMixin, InternationalFetcherMixin, NewsFetcherMixin, SectorFetcherMixin):
-    _spot_cache = None
-    _spot_cache_ts = None  # 缓存时间戳，用于 TTL 控制
-    _spot_tried = False
-    _akshare_unavailable = False
+class DataFetcher(IndexFetcherMixin, SentimentFetcherMixin, MoneyFetcherMixin, InternationalFetcherMixin, NewsFetcherMixin, SectorFetcherMixin, MarginFetcherMixin, BlockTradeFetcherMixin):
+    # 类级别的 spot_em 缓存（所有实例共享，避免重复拉取）
+    _spot_cache: "pd.DataFrame | None" = None
+    _spot_cache_ts: "float | None" = None   # 上次成功获取的 time.time() 戳
+    _spot_cache_ttl: int = 300              # 缓存有效期（秒），5 分钟
     _spot_lock = threading.Lock()
-    _spot_cache_ttl = 300  # 缓存 TTL = 5 分钟
+    _akshare_unavailable = False
 
     def __init__(self, config):
         self.config = config
@@ -162,37 +165,33 @@ class DataFetcher(IndexFetcherMixin, SentimentFetcherMixin, MoneyFetcherMixin, I
 
     @circuit_breaker('akshare.stock_zh_index_spot_em', failure_threshold=3, recovery_timeout=300)
     def _get_spot_em(self):
-        """Get cached spot_em DataFrame，支持 TTL 清理和自动重试"""
-        import time
-        with type(self)._spot_lock:
+        """获取 spot_em DataFrame，带 TTL 的类级别内存缓存 + 线程安全。"""
+        cls = type(self)
+        with cls._spot_lock:
             now = time.time()
-            # 检查缓存有效性（未过期）
-            if type(self)._spot_cache is not None and type(self)._spot_cache_ts is not None:
-                if now - type(self)._spot_cache_ts < type(self)._spot_cache_ttl:
-                    return type(self)._spot_cache, None
-                # 缓存过期，清空以便重新获取
-                type(self)._spot_cache = None
-                type(self)._spot_cache_ts = None
+            # 缓存命中
+            if (
+                cls._spot_cache is not None
+                and cls._spot_cache_ts is not None
+                and now - cls._spot_cache_ts < cls._spot_cache_ttl
+            ):
+                return cls._spot_cache, None
 
-            # 如果之前尝试失败且当前无缓存，短期内不再重试（避免爆发流量）
-            if type(self)._spot_tried and type(self)._spot_cache is None:
-                # 注意：由于 _spot_tried 一旦设为 True 不会重置，这里加上 TTL 保护
-                # 如果缓存过期（已清空），应允许重试
-                pass  # 继续执行重试逻辑
-
+            # 缓存过期或为空，重新拉取
             try:
-                type(self)._spot_cache = self.ak.stock_zh_index_spot_em()
-                type(self)._spot_cache_ts = now
-                type(self)._spot_tried = True
-                return type(self)._spot_cache, None
+                df = self.ak.stock_zh_index_spot_em()
+                cls._spot_cache = df
+                cls._spot_cache_ts = now
+                cls._akshare_unavailable = False
+                return df, None
             except Exception as e:
-                type(self)._spot_tried = True
-                type(self)._spot_cache_ts = None  # 失败时重置时间戳，允许后续重试
+                # 拉取失败：清空缓存时间戳，下次调用仍可重试
+                cls._spot_cache_ts = None
                 err_str = str(e)
                 if 'RemoteDisconnected' in err_str or 'push2.eastmoney.com' in err_str:
-                    type(self)._akshare_unavailable = True
+                    cls._akshare_unavailable = True
                     logger.warning(f"akshare 东方财富接口不可用: {e}")
-                return None, str(e)
+                return None, err_str
 
 
 

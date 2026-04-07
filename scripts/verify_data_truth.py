@@ -12,6 +12,8 @@ from datetime import datetime, date, timedelta
 script_dir = Path(__file__).parent
 sys.path.insert(0, str(script_dir))
 
+from utils.helpers import cn_today, cn_now
+
 from data_fetcher import DataFetcher
 from utils import get_logger, format_date
 
@@ -24,7 +26,7 @@ def verify_akshare_reality():
     print("="*80)
 
     fetcher = DataFetcher({"data_source": "akshare"})
-    test_date = date.today() - timedelta(days=1)
+    test_date = cn_today() - timedelta(days=1)
 
     # 1. 测试指数数据
     print("\n1️⃣  上证指数 (000001.SH)")
@@ -129,7 +131,7 @@ def verify_mx_search_reality():
     print("="*80)
 
     fetcher = DataFetcher({"data_source": "mx-search"})
-    test_date = date.today() - timedelta(days=1)
+    test_date = cn_today() - timedelta(days=1)
     result = fetcher.get_news(test_date, limit=3)
     data = result.get('data')
     source = result.get('source')
@@ -167,8 +169,8 @@ def verify_mx_search_reality():
 
 def main():
     print("🔍 数据真实性验证报告")
-    print(f"⏰ 验证时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"📅 测试日期基准: {date.today()} (实际使用最近交易日)")
+    print(f"⏰ 验证时间: {cn_now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"📅 测试日期基准: {cn_today()} (实际使用最近交易日)")
 
     try:
         verify_akshare_reality()

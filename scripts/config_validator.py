@@ -1,51 +1,130 @@
 """
-配置校验器
+配置校验器（Pydantic V2）
+用 Pydantic 模型对 config.yaml 进行强类型验证，在启动时尽早暴露配置问题。
 """
+
+from typing import Optional, Literal
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 from errors import ConfigValidationError
 
 
-def _require_dict(conf, key, errors):
-    val = conf.get(key)
-    if not isinstance(val, dict):
-        errors.append(f"缺少或非法配置: {key} (需为 object)")
-        return {}
-    return val
+# ---------------------------------------------------------------------------
+# Sub-models
+# ---------------------------------------------------------------------------
+
+class OutputConfig(BaseModel):
+    model_config = ConfigDict(extra='ignore')
+    base_dir: str
+    morning_subdir: str = "morning"
+    evening_subdir: str = "evening"
+
+    @field_validator('base_dir', 'morning_subdir', 'evening_subdir')
+    @classmethod
+    def must_be_non_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError('不能为空字符串')
+        return v.strip()
 
 
-def _require_str(conf, key, errors):
-    val = conf.get(key)
-    if not isinstance(val, str) or not val.strip():
-        errors.append(f"缺少或非法配置: {key} (需为非空字符串)")
-        return ""
-    return val.strip()
+class DataSourceEntry(BaseModel):
+    model_config = ConfigDict(extra='ignore')
+    enabled: bool = True
+    cache_ttl: int = Field(default=3600, ge=0)
 
 
-def validate_config(config):
+class DataSourcesConfig(BaseModel):
+    model_config = ConfigDict(extra='ignore')
+    akshare: DataSourceEntry = Field(default_factory=DataSourceEntry)
+    tushare: DataSourceEntry = Field(default_factory=DataSourceEntry)
+    mx_data: DataSourceEntry = Field(default_factory=DataSourceEntry)
+    sina: DataSourceEntry = Field(default_factory=DataSourceEntry)
+
+
+class WatchlistConfig(BaseModel):
+    model_config = ConfigDict(extra='ignore')
+    path: str
+
+    @field_validator('path')
+    @classmethod
+    def must_be_non_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError('watchlist.path 不能为空')
+        return v.strip()
+
+
+class PdfConfig(BaseModel):
+    model_config = ConfigDict(extra='ignore')
+    enabled: bool = False
+    output_dir: str = "reports/pdf"
+    engine: Literal['fpdf2', 'weasyprint', 'wkhtmltopdf'] = 'fpdf2'
+
+    @field_validator('output_dir')
+    @classmethod
+    def must_be_non_empty_if_set(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError('pdf.output_dir 不能为空')
+        return v.strip()
+
+
+class FeishuDocConfig(BaseModel):
+    model_config = ConfigDict(extra='ignore')
+    enabled: bool = True
+    folder_token: str = ""
+
+
+class FeishuMessageConfig(BaseModel):
+    model_config = ConfigDict(extra='ignore')
+    enabled: bool = True
+    target_chat_id: str = ""
+    message_template: str = ""
+
+
+class PublishConfig(BaseModel):
+    model_config = ConfigDict(extra='ignore')
+    feishu_doc: FeishuDocConfig = Field(default_factory=FeishuDocConfig)
+    pdf: PdfConfig = Field(default_factory=PdfConfig)
+    feishu_message: FeishuMessageConfig = Field(default_factory=FeishuMessageConfig)
+    dry_run: bool = False
+
+
+class KellyConfig(BaseModel):
+    model_config = ConfigDict(extra='ignore')
+    win_rate: float = Field(default=0.5, ge=0.0, le=1.0)
+    risk_reward_ratio: float = Field(default=2.0, gt=0.0)
+    half_kelly: bool = False
+
+
+class AnalysisConfig(BaseModel):
+    model_config = ConfigDict(extra='ignore')
+    kelly: KellyConfig = Field(default_factory=KellyConfig)
+
+
+class AppConfig(BaseModel):
+    """顶层配置模型，对应 config.yaml 根节点。"""
+    model_config = ConfigDict(extra='ignore')
+
+    version: str = "1.0"
+    output: OutputConfig
+    data_sources: DataSourcesConfig = Field(default_factory=DataSourcesConfig)
+    watchlist: WatchlistConfig
+    publish: PublishConfig = Field(default_factory=PublishConfig)
+    analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
+
+
+# ---------------------------------------------------------------------------
+# Public API — backward-compatible with existing callers
+# ---------------------------------------------------------------------------
+
+def validate_config(config: dict) -> None:
     """
-    校验关键配置。
-    仅检查启动期必须项，避免运行中才暴露配置问题。
+    校验关键配置。仅检查启动期必须项，避免运行中才暴露配置问题。
+    校验失败时抛出 ConfigValidationError。
     """
     if not isinstance(config, dict):
         raise ConfigValidationError("配置文件解析失败：根节点必须为 object")
 
-    errors = []
-    output = _require_dict(config, "output", errors)
-    _require_str(output, "base_dir", errors)
-    _require_str(output, "morning_subdir", errors)
-    _require_str(output, "evening_subdir", errors)
-
-    watchlist = _require_dict(config, "watchlist", errors)
-    _require_str(watchlist, "path", errors)
-
-    _require_dict(config, "data_sources", errors)
-
-    publish = config.get("publish", {})
-    if isinstance(publish, dict):
-        pdf = publish.get("pdf", {})
-        if isinstance(pdf, dict) and pdf.get("enabled"):
-            _require_str(pdf, "output_dir", errors)
-            _require_str(pdf, "engine", errors)
-
-    if errors:
-        raise ConfigValidationError("配置校验失败: " + "; ".join(errors))
+    try:
+        AppConfig(**config)
+    except Exception as e:
+        raise ConfigValidationError(f"配置校验失败: {e}") from e
